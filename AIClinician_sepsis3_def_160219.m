@@ -27,14 +27,23 @@
 % without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE
 
 
-%% ########################################################################
-% IMPORT ALL DATA
 
+%% IMPORT ALL DATA
+
+% 计时器启动
 tic
-abx=table2array(readtable('D:/exportdir/abx.csv'));
+
+% 'culture' items
 culture=table2array(readtable('D:/exportdir/culture.csv'));
+%  Microbiologyevents
 microbio=table2array(readtable('D:/exportdir/microbio.csv'));
+% Antibiotics administration
+abx=table2array(readtable('D:/exportdir/abx.csv'));
+% Demographics
 demog=(readtable('D:/exportdir/demog.csv'));
+
+% Vitals from Chartevents
+% Divided into 10 chunks for speed. Each chunk is around 170 MB.
 ce010=table2array(readtable('D:/exportdir/ce010000.csv'));
 ce1020=table2array(readtable('D:/exportdir/ce1000020000.csv'));
 ce2030=table2array(readtable('D:/exportdir/ce2000030000.csv'));
@@ -45,29 +54,49 @@ ce6070=table2array(readtable('D:/exportdir/ce6000070000.csv'));
 ce7080=table2array(readtable('D:/exportdir/ce7000080000.csv'));
 ce8090=table2array(readtable('D:/exportdir/ce8000090000.csv'));
 ce90100=table2array(readtable('D:/exportdir/ce90000100000.csv'));
+
+% Labs from Chartevents and Labs from Labevents
 labU=[ table2array(readtable('D:/exportdir/labs_ce.csv')) ; table2array(readtable('D:/exportdir/labs_le.csv'))  ];
-MV=table2array(readtable('D:/exportdir/mechvent.csv'));
-inputpreadm=table2array(readtable('D:/exportdir/preadm_fluid.csv'));
-inputMV=table2array(readtable('D:/exportdir/fluid_mv.csv'));
-inputCV=table2array(readtable('D:/exportdir/fluid_cv.csv'));
-vasoMV=table2array(readtable('D:/exportdir/vaso_mv.csv'));
-vasoCV=table2array(readtable('D:/exportdir/vaso_cv.csv'));
-UOpreadm=table2array(readtable('D:/exportdir/preadm_uo.csv'));
+
+% Real-time UO
 UO=table2array(readtable('D:/exportdir/uo.csv'));
+% Pre-admission UO
+UOpreadm=table2array(readtable('D:/exportdir/preadm_uo.csv'));
+
+% Real-time input from metavision
+inputMV=table2array(readtable('D:/exportdir/fluid_mv.csv'));
+% Real-time input from carevue
+inputCV=table2array(readtable('D:/exportdir/fluid_cv.csv'));
+
+% Pre-admission fluid intake
+inputpreadm=table2array(readtable('D:/exportdir/preadm_fluid.csv'));
+
+% Vasopressors from metavision
+vasoMV=table2array(readtable('D:/exportdir/vaso_mv.csv'));
+% Vasopressors from carevue
+vasoCV=table2array(readtable('D:/exportdir/vaso_cv.csv'));
+
+% Mechanical ventilation
+MV=table2array(readtable('D:/exportdir/mechvent.csv'));
+
+% 计时器结束
 toc
 
-%% ########################################################################
-%                       INITIAL DATA MANIPULATIONS
-% #########################################################################
 
+%%                       INITIAL DATA MANIPULATIONS
+
+
+% 将 microbio 表中缺失的 charttime 用 chartdate 填补后，删除原 chartdate 列，并插入占位列以匹配后续格式
 ii=isnan(microbio(:,3));  %if charttime is empty but chartdate isn't
 microbio(ii,3)=microbio(ii,4);   %copy time
 microbio( :,4)=[];    %delete chardate
 % Add empty col in microbio (# 3 and #5)
 microbio(:,4)=microbio(:,3);
 microbio(:,[3 5])=0;
-% Combine both tables for micro events
+% 将 microbio 与培养结果 culture 纵向拼接成统一的 bacterio 事件表，便于同时遍历微生物与培养记录
 bacterio = [microbio ; culture];
+
+% 给人口学表 demog 中的死亡、Elixhauser 指数等缺失值置零，避免后续运算受到 NaN 影响
 % correct NaNs in DEMOG
 demog.morta_90(isnan(demog.morta_90))=0;
 demog.morta_hosp(isnan(demog.morta_hosp))=0;
@@ -76,6 +105,13 @@ demog.elixhauser(isnan(demog.elixhauser))=0;
 % compute normalized rate of infusion
 % if we give 100 ml of hypertonic fluid (600 mosm/l) at 100 ml/h (given in 1h) it is 200 ml of NS equivalent
 % so the normalized rate of infusion is 200 ml/h (different volume in same duration)
+% 计算标准化的液体输入速率（ml/h），将不同渗透压的液体换算为等效生理盐水体积
+% 第6列是液体体积，第7列是液体速率，第5列是液体渗透压
+%
+% eg:
+% actual fluid: 100 ml/h, osm = 600 mosm/l
+% NS(Normal Saline, 生理盐水) osm = 300 mosm/l
+% normalized rate = 100 * (600/300) = 200 ml/h (NS equivalent)
 inputMV(:,8)=inputMV(:,7).*inputMV(:,6)./inputMV(:,5);
 
 % fill-in missing ICUSTAY IDs in bacterio
