@@ -10,6 +10,13 @@
 - 预留 80–100 GB 磁盘空间，用于原始数据副本、中间产物和多轮模型输出；若仅分析子集，可适当减少但需保证运行余量。
 - 在具备 PHI 保护措施的环境内工作，任何原始数据禁止写入 Git 仓库。
 
+## MATLAB 工具箱要求
+- Statistics and Machine Learning Toolbox
+- Parallel Computing Toolbox
+- Curve Fitting Toolbox
+- Bioinformatics Toolbox
+
+
 ## 运行流程总览
 1. 准备 Python 与 MATLAB 环境（一次性）。
 2. 使用 `AIClinician_Data_extract_MIMIC3_140219.ipynb` 抽取基础数据。
@@ -60,12 +67,16 @@
 
 ## 第二步：构建 sepsis 队列（MATLAB）
 1. 在 MATLAB 客户端中，确保 Notebook 输出已在 MATLAB 当前路径可访问。
-2. 运行：
+2. 加载 `reference_matrices.mat` 
+   ```matlab
+      load('reference_matrices.mat', 'Reflabs', 'Refvitals', 'sample_and_hold');
+   ```
+3. 运行：
    ```matlab
    run('AIClinician_sepsis3_def_160219.m');
    ```
-3. 检查 Command Window 中的入组统计与过滤规则，若与预期偏差>5%，需复核数据或参数。
-4. 将生成的队列表格保存到 `results\YYYY-MM-DD\cohort\`。
+4. 检查 Command Window 中的入组统计与过滤规则，若与预期偏差>5%，需复核数据或参数。
+5. 将生成的队列表格保存到 `results\YYYY-MM-DD\cohort\`。
 
 ## 第三步：构建特征矩阵（MATLAB）
 1. 确保第二步输出在 MATLAB 工作空间中或以 `.mat` 形式载入。

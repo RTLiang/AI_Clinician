@@ -14,6 +14,8 @@
 %           INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT
 % ########################################################################
 
+disp('INITIAL REFORMAT START');
+
 % gives an array with all unique charttime (1 per row) and all items in columns.
 % ################## IMPORTANT !!!!!!!!!!!!!!!!!!
 % Here i use -24 -> +48 because that's for the MDP
@@ -120,10 +122,14 @@ toc
 close(h);
 reformat(irow:end,:)=[];  %delete extra unused rows
 
+disp('INITIAL REFORMAT END');
+
 
 %% ########################################################################
 %                                   OUTLIERS 
 % ########################################################################
+
+disp('OUTLIER CLEANING START');
 
 %weight
 reformat=deloutabove(reformat,5,300);  %delete outlier above a threshold (300 kg), for variable # 5
@@ -236,8 +242,12 @@ reformat=deloutbelow(reformat,62,-50);
 %lactate
 reformat=deloutabove(reformat,63,30);
 
+disp('OUTLIER CLEANING END');
+
 % ####################################################################
 % some more data manip / imputation from existing values
+
+disp('DATA MANIPULATION START');
 
 % estimate GCS from RASS - data from Wesley JAMA 2003
 ii=isnan(reformat(:,6))&reformat(:,7)>=0;
@@ -346,20 +356,28 @@ reformat(ii,45)=(reformat(ii,44)*0.6934)-0.1752;
 ii=~isnan(reformat(:,45)) & isnan(reformat(:,44));
 reformat(ii,44)=(reformat(ii,45)+0.1752)./0.6934;
 
+disp('DATA MANIPULATION END');
+
 
 %% ########################################################################
 %                      SAMPLE AND HOLD on RAW DATA
 % ########################################################################
 
+disp('SAMPLE AND HOLD START');
+
 reformat=SAH(reformat(:,1:68),sample_and_hold);
+
+disp('SAMPLE AND HOLD END');
 
 
 %% ########################################################################
 %                             DATA COMBINATION
 % ########################################################################
 
+disp('DATA COMBINATION START');
+
 tic
-     save('D:\BACKUP MIT PC\Data_100219.mat', '-v7.3');
+     save('./BACKUP MIT PC/Data_100219.mat', '-v7.3');
 toc
 
 
@@ -515,12 +533,16 @@ close(h);
 
 
 tic
-     save('D:\BACKUP MIT PC\Data_110219.mat', '-v7.3');
+     save('./BACKUP MIT PC/Data_110219.mat', '-v7.3');
 toc
+
+disp('DATA COMBINATION END');
 
 %% ########################################################################
 %             CONVERT TO TABLE AND KEEP ONLY WANTED VARIABLE
 % ########################################################################
+
+disp('TABLE REDUCTION START');
 
 dataheaders=[sample_and_hold(1,:) {'Shock_Index' 'PaO2_FiO2'}]; 
 dataheaders=regexprep(dataheaders,'['']','');
@@ -540,8 +562,12 @@ dataheaders5 = {'bloc','icustayid','charttime','gender','age','elixhauser','re_a
 ii=find(ismember(reformat2t.Properties.VariableNames,dataheaders5));
 reformat3t=reformat2t(:,ii); 
 
+disp('TABLE REDUCTION END');
+
 
 %% SOME DATA MANIP BEFORE IMPUTATION
+
+disp('PRE-IMPUTATION ADJUSTMENTS START');
 
 % CORRECT GENDER
 reformat3t.gender=reformat3t.gender-1; 
@@ -574,10 +600,14 @@ figure; bar(sum(isnan(table2array(reformat3t)))./size(reformat3t,1))
 reformat3t.Shock_Index=zeros(size(reformat3t,1),1);
 reformat3t.PaO2_FiO2=zeros(size(reformat3t,1),1);
 
+disp('PRE-IMPUTATION ADJUSTMENTS END');
+
 
 %% ########################################################################
 %        HANDLING OF MISSING VALUES & CREATE REFORMAT4T
 % ########################################################################
+
+disp('MISSING VALUE IMPUTATION START');
 
 % Do linear interpol where missingness is low (kNN imputation doesnt work if all rows have missing values)
 reformat3=table2array(reformat3t);
@@ -614,9 +644,12 @@ reformat3t(:,11:mechventcol-1)=array2table(ref);
 reformat4t=reformat3t;
 reformat4=table2array(reformat4t);
 
+disp('MISSING VALUE IMPUTATION END');
+
 %% ########################################################################
 %        COMPUTE SOME DERIVED VARIABLES: P/F, Shock Index, SOFA, SIRS...
 % ########################################################################
+disp('DERIVED VARIABLE COMPUTATION START');
 
 
 % re-compute P/F with no missing values...
@@ -701,9 +734,13 @@ reformat4t(:,end-1)=array2table(reformat4(:,end-1));
 reformat4t(:,end)=array2table(reformat4(:,end));
 
 
+disp('DERIVED VARIABLE COMPUTATION END');
+
 %% ########################################################################
 %                     CREATE FINAL MIMIC_TABLE
 % ########################################################################
 
+disp('FINAL TABLE CREATION START');
 MIMICtable = reformat4t;
+disp('FINAL TABLE CREATION END');
 

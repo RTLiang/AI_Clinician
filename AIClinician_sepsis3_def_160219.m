@@ -26,66 +26,67 @@
 % This code is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 % without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE
 
-
+load('reference_matrices.mat', 'Reflabs', 'Refvitals', 'sample_and_hold');
 
 %% IMPORT ALL DATA
-
+disp('IMPORT ALL DATA START')
 % 计时器启动
 tic
 
 % 'culture' items
-culture=table2array(readtable('D:/exportdir/culture.csv'));
+culture=table2array(readtable('./exportdir/culture.csv'));
 %  Microbiologyevents
-microbio=table2array(readtable('D:/exportdir/microbio.csv'));
+microbio=table2array(readtable('./exportdir/microbio.csv'));
 % Antibiotics administration
-abx=table2array(readtable('D:/exportdir/abx.csv'));
+abx=table2array(readtable('./exportdir/abx.csv'));
 % Demographics
-demog=(readtable('D:/exportdir/demog.csv'));
+demog=(readtable('./exportdir/demog.csv'));
 
 % Vitals from Chartevents
 % Divided into 10 chunks for speed. Each chunk is around 170 MB.
-ce010=table2array(readtable('D:/exportdir/ce010000.csv'));
-ce1020=table2array(readtable('D:/exportdir/ce1000020000.csv'));
-ce2030=table2array(readtable('D:/exportdir/ce2000030000.csv'));
-ce3040=table2array(readtable('D:/exportdir/ce3000040000.csv'));
-ce4050=table2array(readtable('D:/exportdir/ce4000050000.csv'));
-ce5060=table2array(readtable('D:/exportdir/ce5000060000.csv'));
-ce6070=table2array(readtable('D:/exportdir/ce6000070000.csv'));
-ce7080=table2array(readtable('D:/exportdir/ce7000080000.csv'));
-ce8090=table2array(readtable('D:/exportdir/ce8000090000.csv'));
-ce90100=table2array(readtable('D:/exportdir/ce90000100000.csv'));
+ce010=table2array(readtable('./exportdir/ce010000.csv'));
+ce1020=table2array(readtable('./exportdir/ce1000020000.csv'));
+ce2030=table2array(readtable('./exportdir/ce2000030000.csv'));
+ce3040=table2array(readtable('./exportdir/ce3000040000.csv'));
+ce4050=table2array(readtable('./exportdir/ce4000050000.csv'));
+ce5060=table2array(readtable('./exportdir/ce5000060000.csv'));
+ce6070=table2array(readtable('./exportdir/ce6000070000.csv'));
+ce7080=table2array(readtable('./exportdir/ce7000080000.csv'));
+ce8090=table2array(readtable('./exportdir/ce8000090000.csv'));
+ce90100=table2array(readtable('./exportdir/ce90000100000.csv'));
 
 % Labs from Chartevents and Labs from Labevents
-labU=[ table2array(readtable('D:/exportdir/labs_ce.csv')) ; table2array(readtable('D:/exportdir/labs_le.csv'))  ];
+labU=[ table2array(readtable('./exportdir/labs_ce.csv')) ; table2array(readtable('./exportdir/labs_le.csv'))  ];
 
 % Real-time UO
-UO=table2array(readtable('D:/exportdir/uo.csv'));
+UO=table2array(readtable('./exportdir/uo.csv'));
 % Pre-admission UO
-UOpreadm=table2array(readtable('D:/exportdir/preadm_uo.csv'));
+UOpreadm=table2array(readtable('./exportdir/preadm_uo.csv'));
 
 % Real-time input from metavision
-inputMV=table2array(readtable('D:/exportdir/fluid_mv.csv'));
+inputMV=table2array(readtable('./exportdir/fluid_mv.csv'));
 % Real-time input from carevue
-inputCV=table2array(readtable('D:/exportdir/fluid_cv.csv'));
+inputCV=table2array(readtable('./exportdir/fluid_cv.csv'));
 
 % Pre-admission fluid intake
-inputpreadm=table2array(readtable('D:/exportdir/preadm_fluid.csv'));
+inputpreadm=table2array(readtable('./exportdir/preadm_fluid.csv'));
 
 % Vasopressors from metavision
-vasoMV=table2array(readtable('D:/exportdir/vaso_mv.csv'));
+vasoMV=table2array(readtable('./exportdir/vaso_mv.csv'));
 % Vasopressors from carevue
-vasoCV=table2array(readtable('D:/exportdir/vaso_cv.csv'));
+vasoCV=table2array(readtable('./exportdir/vaso_cv.csv'));
 
 % Mechanical ventilation
-MV=table2array(readtable('D:/exportdir/mechvent.csv'));
+MV=table2array(readtable('./exportdir/mechvent.csv'));
+
 
 % 计时器结束
 toc
-
+disp('IMPORT ALL DATA END')
 
 %%                       INITIAL DATA MANIPULATIONS
 
-
+disp('INITIAL DATA MANIPULATIONS START')
 % 将 microbio 表中缺失的 charttime 用 chartdate 填补后，删除原 chartdate 列，
 % 并插入占位列以匹配后续格式
 ii=isnan(microbio(:,3));  %if charttime is empty but chartdate isn't
@@ -163,10 +164,10 @@ if isnan(abx(i,2))
     end
 end   
 end
-
+disp('INITIAL DATA MANIPULATIONS END')
 %%    find presumed onset of infection according to sepsis3 guidelines
 
-
+disp('FIND PRESUMED ONSET OF INFECTION ACCORDING TO SEPSIS3 GUIDELINES START')
 % METHOD:
 % I loop through all the ABx(AntiBiotic eXceution) given, and as soon as there is a sample present
 % within the required time criteria I pick this flag and break the loop.
@@ -211,12 +212,16 @@ toc
 %sum of records found
 % 有多少次 ICU 住院被标记为感染
 sum(onset(:,3)>0)
-
+disp('FIND PRESUMED ONSET OF INFECTION ACCORDING TO SEPSIS3 GUIDELINES END')
 
 %% Replacing item_ids with column numbers from reference tables
-
+disp('REPLACING ITEM_IDS WITH COLUMN NUMBERS FROM REFERENCE TABLES START')
 % replace itemid in labs with column number
 % this will accelerate process later
+
+% 把实验室和生命体征记录里原本的 itemid（即项目编号）替换成对应参考表中的“列号”，
+% 以便后续把这些记录直接映射到特征矩阵的列索引上，提升后续处理效率。
+
 
 tic
 for i=1:size(labU,1)
@@ -258,20 +263,20 @@ for i=1:size(ce90100,1)
 [~,locb]=ismember(Refvitals,ce90100(i,3));ce90100(i,3)=find(max(locb')');
 end
 
+disp('REPLACING ITEM_IDS WITH COLUMN NUMBERS FROM REFERENCE TABLES END')
 
 
-%% ########################################################################
-%           INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT
-% ########################################################################
-
+%%           INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT
+disp('INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT START')
 % gives an array with all unique charttime (1 per row) and all items in columns.
 % ################## IMPORTANT !!!!!!!!!!!!!!!!!!
 % Here i use -48 -> +24 because that's for sepsis3 cohort defintion!!
 % I need different time period for the MDP (-24 -> +48)
 
-
+% 预分配矩阵空间
 reformat=NaN(2000000,68);  %final table 
 qstime=zeros(100000,4);
+
 winb4=49;   %lower limit for inclusion of data (48h before time flag)
 winaft=25;  % upper limit (24h after)
 irow=1;  %recording row for summary table
@@ -372,12 +377,13 @@ toc
 
 close(h);
 reformat(irow:end,:)=[];  %delete extra unused rows
+disp('INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT END')
 
 
 %% ########################################################################
 %                                   OUTLIERS 
 % ########################################################################
-
+disp('OUTLIERS START')
 %weight
 reformat=deloutabove(reformat,5,300);  %delete outlier above a threshold (300 kg), for variable # 5
 
@@ -596,19 +602,20 @@ ii=~isnan(reformat(:,44)) & isnan(reformat(:,45));
 reformat(ii,45)=(reformat(ii,44)*0.6934)-0.1752;
 ii=~isnan(reformat(:,45)) & isnan(reformat(:,44));
 reformat(ii,44)=(reformat(ii,45)+0.1752)./0.6934;
-
+disp('OUTLIERS END')
 
 %% ########################################################################
 %                      SAMPLE AND HOLD on RAW DATA
 % ########################################################################
-
+disp('SAMPLE AND HOLD ON RAW DATA START')
 reformat=SAH(reformat(:,1:68),sample_and_hold);
+disp('SAMPLE AND HOLD ON RAW DATA END')
 
 
 %% ########################################################################
 %                             DATA COMBINATION
 % ########################################################################
-
+disp('DATA COMBINATION START')
 % WARNING: the time window of interest has been defined above (here -48 -> +24)! 
 
 timestep=4;  %resolution of timesteps, in hours
@@ -759,11 +766,11 @@ toc
 reformat2(irow:end,:)=[];
 close(h);
 
-
+disp('DATA COMBINATION END')
 %% ########################################################################
 %    CONVERT TO TABLE AND DELETE VARIABLES WITH EXCESSIVE MISSINGNESS
 % ########################################################################
-
+disp('CONVERT TO TABLE AND DELETE VARIABLES WITH EXCESSIVE MISSINGNESS START')
 dataheaders=[sample_and_hold(1,:) {'Shock_Index' 'PaO2_FiO2'}]; 
 dataheaders=regexprep(dataheaders,'['']','');
 dataheaders = ['bloc','icustayid','charttime','gender','age','elixhauser','re_admission', 'died_in_hosp', 'died_within_48h_of_out_time','mortality_90d','delay_end_of_record_and_discharge_or_death',...
@@ -775,11 +782,11 @@ miss=sum(isnan(reformat2))./size(reformat2,1);
 
 % if values have less than 70% missing values (over 30% of values present): I keep them
 reformat3t=reformat2t(:,[true(1,11) miss(12:74)<0.70 true(1,11)]) ; 
-
+disp('CONVERT TO TABLE AND DELETE VARIABLES WITH EXCESSIVE MISSINGNESS END')
 %% ########################################################################
 %             HANDLING OF MISSING VALUES  &  CREATE REFORMAT4T
 % ########################################################################
-
+disp('HANDLING OF MISSING VALUES AND CREATE REFORMAT4T START')
 % Do linear interpol where missingness is low (kNN imputation doesnt work if all rows have missing values)
 reformat3=table2array(reformat3t);
 miss=sum(isnan((reformat3)))./size(reformat3,1);
@@ -815,11 +822,11 @@ reformat3t(:,11:mechventcol-1)=array2table(ref);
 reformat4t=reformat3t;
 reformat4=table2array(reformat4t);
 
-
+disp('HANDLING OF MISSING VALUES AND CREATE REFORMAT4T END')
 %% ########################################################################
 %        COMPUTE SOME DERIVED VARIABLES: P/F, Shock Index, SOFA, SIRS...
 % ########################################################################
-
+disp('COMPUTE SOME DERIVED VARIABLES: P/F, Shock Index, SOFA, SIRS... START')
 % CORRECT GENDER
 reformat4t.gender=reformat4t.gender-1; 
 
@@ -915,11 +922,11 @@ end
 reformat4t(:,end-1)=array2table(reformat4(:,end-1));
 reformat4t(:,end)=array2table(reformat4(:,end));
 
-
+disp('COMPUTE SOME DERIVED VARIABLES: P/F, Shock Index, SOFA, SIRS... END')
 %% ########################################################################
 %                            EXCLUSION OF SOME PATIENTS 
 % ########################################################################
-
+disp('EXCLUSION OF SOME PATIENTS START')
 numel(unique(reformat4t.icustayid))  %count before
 
 % check for patients with extreme UO = outliers = to be deleted (>40 litres of UO per 4h!!)
@@ -968,11 +975,11 @@ ii=ismember(icustayidlist,reformat4t.icustayid(ii));
 reformat4t(ii,:)=[];
 
 numel(unique(reformat4t.icustayid))   %count after
-
+disp('EXCLUSION OF SOME PATIENTS END')
 %% #######################################################################
 %                       CREATE SEPSIS COHORT
 % ########################################################################
-
+disp('CREATE SEPSIS COHORT START')
 % create array with 1 row per icu admission
 % keep only patients with flagged sepsis (max sofa during time period of interest >= 2)
 % we assume baseline SOFA of zero (like other publications)
@@ -1010,3 +1017,4 @@ size(sepsis,1)
 
 %save cohort
 writetable(sepsis,'sepsis_mimiciii.csv','Delimiter',',');
+disp('CREATE SEPSIS COHORT END')
