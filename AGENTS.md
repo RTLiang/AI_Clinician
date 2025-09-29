@@ -1,19 +1,21 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The repository centers on MATLAB scripts for end-to-end policy training. `AIClinician_core_160219.m` orchestrates model building and evaluation, while `AIClinician_sepsis3_def_160219.m` and `AIClinician_mimic3_dataset_160219.m` prepare cohorts and features. The `MDPtoolbox/` folder contains a lightly modified copy of the Markov Decision Process toolbox—keep local changes isolated there. Data extraction resides in `AIClinician_Data_extract_MIMIC3_140219.ipynb`, and supporting utilities (e.g., `SAH.m`, `fixgaps.m`) live at the repository root.
+Core training logic lives in `AIClinician_core_160219.m`, which wires cohort prep, policy learning, and evaluation. Input cohorts and feature matrices are defined in `AIClinician_sepsis3_def_160219.m` and `AIClinician_mimic3_dataset_160219.m`. Keep Markov Decision Process utilities inside `MDPtoolbox/`; local tweaks should stay scoped there so upstream updates remain easy. Data extraction workflows are captured in `AIClinician_Data_extract_MIMIC3_140219.ipynb`, while standalone helpers such as `SAH.m`, `fixgaps.m`, and `fastknnsearch.m` sit at the repository root for reuse.
 
 ## Build, Test, and Development Commands
-Run data extraction in a Python environment with `jupyter notebook AIClinician_Data_extract_MIMIC3_140219.ipynb` or the headless alternative `jupyter nbconvert --to notebook --execute`. Use MATLAB batch mode for repeatable runs: `matlab -batch "run('AIClinician_core_160219.m')"`. Evaluation helpers such as `offpolicy_eval_tdlearning.m` and `offpolicy_eval_wis.m` can be exercised with `matlab -batch "run('offpolicy_eval_tdlearning.m')"`. Set MATLAB’s `path` to include `MDPtoolbox/` before executing.
+- `jupyter nbconvert --to notebook --execute AIClinician_Data_extract_MIMIC3_140219.ipynb`: regenerate cohort extracts headlessly.
+- `matlab -batch "run('AIClinician_core_160219.m')"`: execute the end-to-end training pipeline; ensure `MDPtoolbox/` is on the MATLAB path.
+- `matlab -batch "run('offpolicy_eval_tdlearning.m')"` and `matlab -batch "run('offpolicy_eval_wis.m')"`: run evaluation suites; log metric deltas alongside dataset snapshot and random seeds.
 
 ## Coding Style & Naming Conventions
-Follow MATLAB’s 4-space indentation and avoid tabs. Favour vectorised operations and preallocation (`NaN(...)`) as done in `AIClinician_core_160219.m`. Name scripts with the `AIClinician_<target>_<YYMMDD>.m` pattern and table columns in snake_case to match existing variable names. Keep helper functions near the call sites unless they are shared widely—in that case place them beside peers at the repository root or under `MDPtoolbox/`. Run `matlab -batch "checkcode('file.m')"` before submission when possible.
+Use 4-space indentation and avoid tabs. Favour vectorised MATLAB operations and preallocate arrays with `NaN(...)` or zeros to match `AIClinician_core_160219.m`. Script filenames follow `AIClinician_<target>_<YYMMDD>.m`; table variables stay snake_case. Run `matlab -batch "checkcode('file.m')"` before submitting to catch style or performance warnings.
 
 ## Testing Guidelines
-Validate dataset preparation by diffing summary counts before and after changes and logging anomalies to MATLAB’s console. For policy changes, re-run `AIClinician_core_160219.m` on a small cohort subset and compare key metrics (`recqvi`, mortality deltas). Document the dataset snapshot and random seeds used. Notebook modifications must export executed output (Kernel → Restart & Run All) so reviewers can confirm results.
+When adjusting cohort logic, diff aggregate counts (patients, ICU stays, interventions) before and after changes and print anomalies. For policy updates, rerun the core script on a reduced cohort and record `recqvi`, mortality deltas, and any WIS/TIS metrics. Restart and run notebooks end to end so outputs capture the executed state in Git.
 
 ## Commit & Pull Request Guidelines
-Commits should be small, scoped to a single concern, and written in the imperative mood (e.g., `Refine reward shaping parameters`). Reference datasets or scripts touched, and attach brief result notes when policies shift. Pull requests must outline motivation, methodology, rerun commands, and link to any tracked issues; include plots or tables when behaviour changes. Flag any dependency on protected health information so maintainers can coordinate secure handling.
+Write imperative, single-focus commits (e.g., `Tighten reward transition smoothing`). Reference affected datasets or scripts and summarize observed metric shifts. Pull requests should state motivation, methodology, rerun commands, linked issues, and include tables or plots for behavioural changes. Highlight any reliance on protected health information so reviewers can coordinate secure handling.
 
-## Data & Access Notes
-This project depends on licensed clinical datasets; never commit raw MIMIC-III or eICU extracts. Store credentials and PHI outside the repository (use environment variables or MATLAB preferences). When sharing artefacts, strip patient identifiers and ensure aggregated counts respect the source data agreements.
+## Security & Data Handling
+Never commit raw MIMIC-III or eICU exports. Keep credentials and PHI outside version control using environment variables or MATLAB preferences. Share only de-identified aggregates and respect source data license constraints when distributing artefacts.

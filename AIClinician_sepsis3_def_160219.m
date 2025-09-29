@@ -86,7 +86,8 @@ toc
 %%                       INITIAL DATA MANIPULATIONS
 
 
-% 将 microbio 表中缺失的 charttime 用 chartdate 填补后，删除原 chartdate 列，并插入占位列以匹配后续格式
+% 将 microbio 表中缺失的 charttime 用 chartdate 填补后，删除原 chartdate 列，
+% 并插入占位列以匹配后续格式
 ii=isnan(microbio(:,3));  %if charttime is empty but chartdate isn't
 microbio(ii,3)=microbio(ii,4);   %copy time
 microbio( :,4)=[];    %delete chardate
@@ -115,6 +116,8 @@ demog.elixhauser(isnan(demog.elixhauser))=0;
 inputMV(:,8)=inputMV(:,7).*inputMV(:,6)./inputMV(:,5);
 
 % fill-in missing ICUSTAY IDs in bacterio
+% 目的是在拿到微生物/培养记录时即便原始提取缺了 icustay_id，也能通过患者信息和时间范围推断出
+% 属于哪次 ICU 住院，方便后续按 ICU stay 分析脓毒症事件。
 for i=1:size(bacterio,1)
 if bacterio(i,3)==0   %if missing icustayid
     o=bacterio(i,4);  %charttime
@@ -133,7 +136,6 @@ end
 end
 toc
 
-
 for i=1:size(bacterio,1)
 if bacterio(i,3)==0   %if missing icustayid
     subjectid=bacterio(i,1);
@@ -146,7 +148,7 @@ end
 end
 
 % fill-in missing ICUSTAY IDs in ABx
-
+% 确保抗生素记录能关联到具体 ICU stay
 for i=1:size(abx,1)
 if isnan(abx(i,2))
     o=abx(i,3);  %time of event
@@ -162,38 +164,40 @@ if isnan(abx(i,2))
 end   
 end
 
-%% ########################################################################
-%    find presumed onset of infection according to sepsis3 guidelines
-% ########################################################################
+%%    find presumed onset of infection according to sepsis3 guidelines
+
 
 % METHOD:
-% I loop through all the ABx given, and as soon as there is a sample present
+% I loop through all the ABx(AntiBiotic eXceution) given, and as soon as there is a sample present
 % within the required time criteria I pick this flag and break the loop.
 
-onset=zeros(100000,3);
+% 初始化感染发生时间的矩阵，行数为 ICU stay 数量，3 列分别存储 subject_id、icustay_id 和感染发生时间
+onset = zeros(100000, 3);
+% This initializes the onset matrix for presumed infection, with 100,000 rows (one per ICU stay)
+% and 3 columns: subject_id, icustay_id, and infection onset time.
 
 for icustayid=1:100000
 
-    ab=abx(abx(:,2)==icustayid+200000,3);   %start time of abx for this icustayid
-    bact=bacterio(bacterio(:,3)==icustayid+200000,4);  %time of sample
-    subj_bact=bacterio(bacterio(:,3)==icustayid+200000,1);  %subjectid
-    
+    ab=abx(abx(:,2)==icustayid+200000,3);   %start time of abx for this icustayid 抗生素
+    bact=bacterio(bacterio(:,3)==icustayid+200000,4);  %time of sample 微生物培养
+    subj_bact=bacterio(bacterio(:,3)==icustayid+200000,1);  %subjectid 患者ID
+    % 只有当某个住院既有抗生素又有培养数据时才继续
     if ~isempty(ab) & ~isempty(bact)   %if we have data for both: proceed
         
-      D = pdist2(ab, bact)/3600;  %pairwise distances btw antibio and cultures, in hours
-      
+      D = pdist2(ab, bact)/3600;  %pairwise distances btw antibio and cultures, in hours 两次事件相差的小时数
+    %   每次 ICU 住院挑出最合理的“感染起点”时间，后续定义 Sepsis-3 的时间窗
       for i=1:size(D,1)  % looping through all rows of AB given, from early to late
         [M,I] = min(D(i,:));   %minimum distance in this row
         ab1=ab(i);       %timestamp of this value in list of antibio
         bact1=bact(I);      %timestamp in list of cultures
               
-        if M<=24 & ab1<=bact1      %if ab was first and delay < 24h
+        if M<=24 && ab1<=bact1      %if ab was first and delay < 24h
             onset(icustayid,1)=subj_bact(1);   %subject_id
             onset(icustayid,2)=icustayid;       % icustay_id
             onset(icustayid,3)=ab1;     %onset of infection = abx time
               icustayid
             break
-        elseif M<=72 & ab1>=bact1    %elseif sample was first and delay < 72h
+        elseif M<=72 && ab1>=bact1    %elseif sample was first and delay < 72h
             onset(icustayid,1)=subj_bact(1);
             onset(icustayid,2)=icustayid;
             onset(icustayid,3)=bact1;       %onset of infection = sample time
@@ -205,6 +209,7 @@ end
 toc
 
 %sum of records found
+% 有多少次 ICU 住院被标记为感染
 sum(onset(:,3)>0)
 
 
