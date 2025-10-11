@@ -1,10 +1,14 @@
+
 .venv
 mimiciii-demo
 mimiciii
 physionet.org
 mimiciii.zip
 BACKUP MIT PC
-exportdir
+exportdir/*.csv
+exportdir/eicu/*.csv
+exportdir/eicu/*.mat
 ~$*.xlsx
 __pycache__
 *.pyc
+.ds_store

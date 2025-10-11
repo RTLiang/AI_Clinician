@@ -98,6 +98,21 @@ microbio(:,[3 5])=0;
 % 将 microbio 与培养结果 culture 纵向拼接成统一的 bacterio 事件表，便于同时遍历微生物与培养记录
 bacterio = [microbio ; culture];
 
+% 示例：
+%   microbio.csv 行：  [96|170324|NaN|5879088000|specimen|itemid|...]
+%   1. charttime 为空，先用 chartdate=5879088000 覆盖第 3 列 -> [96|170324|5879088000|5879088000|specimen|itemid|...]
+%   2. 删除原 chartdate 列并插入两个占位列 (#4,#5) -> [96|170324|5879088000|0|0|specimen|itemid|...]
+%   3. culture.csv 行保持原结构，如 [2|163353|243653|5318688000|3333]。
+%   4. 合并后 bacterio 的前几行示意为：
+%        [96|170324|5879088000|0|0|specimen|itemid|...]
+%        [96|170324|5879135400|0|0|specimen|itemid|...]
+%        ...
+%        [2|163353|243653|5318688000|3333]
+%        [5|178980|214757|4199839200|3333]
+%      统一后的 bacterio 既包含微生物学事件也包含培养送检事件，后续在填充 icustay_id 并与抗生素给药记录配对时只需遍历该矩阵。
+
+
+
 % 给人口学表 demog 中的死亡、Elixhauser 指数等缺失值置零，避免后续运算受到 NaN 影响
 % correct NaNs in DEMOG
 demog.morta_90(isnan(demog.morta_90))=0;

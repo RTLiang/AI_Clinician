@@ -31,7 +31,7 @@
 % The original cohort from the 2018 Nature Medicine publication was built using MIMIC-III v1.3.
 
 % ############################  MODEL PARAMETERS   #####################################
-
+diary('AIClinician_core_log.txt');  %saves command window output to text file
 disp('####  INITIALISATION  ####') 
 
 nr_reps=500;               % nr of repetitions (total nr models)
@@ -1213,3 +1213,4 @@ for i=1:5
 [min(reformat5(io==i,iol)) median(reformat5(io==i,iol)) max(reformat5(io==i,iol))]
 end
 
+diary off  
