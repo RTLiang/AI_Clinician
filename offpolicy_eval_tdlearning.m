@@ -18,24 +18,39 @@ d=zeros(ncl,1);
 fprintf('Progress of Q-Learning:\n');
 fprintf(['\n' repmat('.',1,num_iter) '\n\n']);
 
+num_states = size(physpol,1);
+num_actions = size(physpol,2);
+
 parfor i=1:num_iter
 fprintf('\b|\n');
 
 ii=floor(rand(size(p,1),1)+prop);     % select a random sample of trajectories
-j=ismember(qldata3(:,8),p(ii==1));
-q=qldata3(j==1,1:4);
+mask=ismember(qldata3(:,8),p(ii==1));
+q=qldata3(mask,1:4);
 
-[Qoff, ~]=OffpolicyQlearning150816( q , gamma, 0.1, 300000);
-
-V=zeros(750,25);
-for k=1:750
-    for j=1:25
-        V(k,j)=physpol(k,j)*Qoff(k,j);
-    end
+if isempty(q)
+    bootql(i) = {NaN};
+    continue
 end
 
-Vs =sum(V')';
-bootql(i)={nansum(Vs(1:750).*d)/sum(d)};
+[Qoff, ~]=OffpolicyQlearning150816( q , gamma, 0.1, 300000, num_states, num_actions);
+
+if size(Qoff,1) < num_states
+    Qoff(num_states, size(Qoff,2)) = 0;
+elseif size(Qoff,1) > num_states
+    Qoff = Qoff(1:num_states,:);
+end
+
+if size(Qoff,2) < num_actions
+    Qoff(:, num_actions) = 0;
+elseif size(Qoff,2) > num_actions
+    Qoff = Qoff(:,1:num_actions);
+end
+
+V = physpol .* Qoff;
+
+Vs = sum(V,2);
+bootql(i)={nansum(Vs(1:ncl).*d)/sum(d)};
 
 % Vs=nansum((physpol.*Qoff)')';
 % bootql(i)={sum(Vs(1:ncl).*d)/sum(d)};

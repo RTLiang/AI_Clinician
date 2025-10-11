@@ -108,7 +108,19 @@ eICUzs=eICUraw;
 eICUzs(:,1:3)=eICUzs(:,1:3)-0.5;
 eICUzs(:,4)=log(eICUzs(:,4)+0.1);
 eICUzs(:,5:36)=(eICUzs(:,5:36)-cmu)./csigma;
-eICUzs(:,37:47)=(log(0.1+eICUzs(:,37:47))-dmu)./dsigma;
+
+logcols = 0.1 + eICUraw(:,37:47);
+logcols(logcols<=0) = NaN;
+logcols = log(logcols);
+eICUzs(:,37:47) = (logcols - dmu)./dsigma;
+
+% Ensure the array passed to knnsearch is numeric, finite, and real
+eICUzs = double(eICUzs);
+bad = ~isfinite(eICUzs);
+eICUzs(bad) = 0;
+if ~isreal(eICUzs)
+    eICUzs = real(eICUzs);
+end
 
 if sum(isnan(eICUraw(:,4))) >0 || sum(isnan(eICUraw(:,45)))>0;  disp('NaNs in Xtest / drug doses'); disp('EXECUTION STOPPED'); return;end
 p=gcp('nocreate'); if isempty(p) ; pool = parpool; end ; mdp_verbose
@@ -142,6 +154,12 @@ N=size(X,1); %total number of rows to choose from
 sampl=X(find(floor(rand(N,1)+prop)),:);
 [~,C] = kmeans(sampl,ncl,'Options',options,'MaxIter',10000,...
     'Start','plus','Display','final','Replicates',nclustering);
+C = double(C);
+badC = ~isfinite(C);
+C(badC) = 0;
+if ~isreal(C)
+    C = real(C);
+end
 [idx]=knnsearch(C,X);  %N-D nearest point search: look for points closest to each centroid
 
 
@@ -508,7 +526,7 @@ end
 recqvi(modl:end,:)=[];
 
 tic
-     save('D:\BACKUP MIT PC\Data_160219.mat', '-v7.3');
+     save('.\BACKUP MIT PC\Data_160219.mat', '-v7.3');
 toc
 
 

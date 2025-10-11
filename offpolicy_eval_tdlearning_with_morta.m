@@ -10,9 +10,13 @@ prog=NaN(floor(size(ptid,1)*1.01*prop*num_iter),4);
 
 ii=qldata3(:,1)==1;
 a=qldata3(ii,2);
-d=zeros(750,1);
+ncl = size(physpol,1)-2;
+d=zeros(ncl,1);
 
- for i=1:750; d(i)=sum(a==i); end  % state distribution
+for i=1:ncl; d(i)=sum(a==i); end  % state distribution
+
+num_states = size(physpol,1);
+num_actions = size(physpol,2);
  
 fprintf('Progress:\n');
 fprintf(['\n' repmat('.',1,num_iter) '\n\n']);
@@ -25,21 +29,39 @@ ii=floor(rand(size(p,1),1)+prop);     % select a random sample of trajectories
 j=ismember(qldata3(:,8),p(ii==1));
 q=qldata3(j==1,1:4);
 
-[Qoff, ~]=OffpolicyQlearning150816( q , gamma, 0.1, 300000);
-
-
-V=zeros(750,25);
-for k=1:750
-    for j=1:25
-        V(k,j)=physpol(k,j)*Qoff(k,j);
-    end
+if isempty(q)
+    bootql(i) = {NaN};
+    continue
 end
-Vs =sum(V')';
-bootql(i)={nansum(Vs(1:750).*d)/sum(d)};
+
+[Qoff, ~]=OffpolicyQlearning150816( q , gamma, 0.1, 300000, num_states, num_actions);
+
+
+if size(Qoff,1) < num_states
+    Qoff(num_states, size(Qoff,2)) = 0;
+elseif size(Qoff,1) > num_states
+    Qoff = Qoff(1:num_states,:);
+end
+
+if size(Qoff,2) < num_actions
+    Qoff(:, num_actions) = 0;
+elseif size(Qoff,2) > num_actions
+    Qoff = Qoff(:,1:num_actions);
+end
+
+V = physpol .* Qoff;
+Vs = sum(V,2);
+bootql(i)={nansum(Vs(1:ncl).*d)/sum(d)};
 jj=find(ismember(ptid,p(ii==1)));
 
      for ii=1:numel(jj)  % record offline Q value in training set & outcome - for plot
-     prog(jprog,1)=Qoff(idx(jj(ii)),actionbloctrain(jj(ii)));
+     state_idx = round(idx(jj(ii)));
+     action_idx = round(actionbloctrain(jj(ii)));
+     if state_idx>=1 && state_idx<=num_states && action_idx>=1 && action_idx<=num_actions 
+         prog(jprog,1)=Qoff(state_idx,action_idx);
+     else
+         prog(jprog,1)=NaN;
+     end
      prog(jprog,2)=Y90(jj(ii));
      prog(jprog,3)=ptid(jj(ii));   %HERE EACH ITERATION GIVES A DIFFERENT PT_ID  //// if I just do rep*ptid it bugs and mixes up ids, for ex with id3 x rep 10 = 30 (which already exists)
      prog(jprog,4)=i;

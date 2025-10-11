@@ -2,3 +2,7 @@ numpy
 pandas
 matplotlib
 psycopg2
+pandas
+sqlalchemy
+psycopg2-binary
+scipy

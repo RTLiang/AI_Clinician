@@ -742,5 +742,7 @@ disp('DERIVED VARIABLE COMPUTATION END');
 
 disp('FINAL TABLE CREATION START');
 MIMICtable = reformat4t;
+% 保存MIMICtable，下次使用就可以直接load
+save('./BACKUP MIT PC/MIMICtable.mat', 'MIMICtable', '-v7.3');
 disp('FINAL TABLE CREATION END');
 

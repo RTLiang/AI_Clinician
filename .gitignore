@@ -5,3 +5,6 @@ physionet.org
 mimiciii.zip
 BACKUP MIT PC
 exportdir
+~$*.xlsx
+__pycache__
+*.pyc
