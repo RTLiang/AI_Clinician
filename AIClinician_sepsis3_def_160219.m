@@ -98,26 +98,51 @@ microbio(:,[3 5])=0;
 % 将 microbio 与培养结果 culture 纵向拼接成统一的 bacterio 事件表，便于同时遍历微生物与培养记录
 bacterio = [microbio ; culture];
 
-% 示例：
-%   microbio.csv 行：  [96|170324|NaN|5879088000|specimen|itemid|...]
-%   1. charttime 为空，先用 chartdate=5879088000 覆盖第 3 列 -> [96|170324|5879088000|5879088000|specimen|itemid|...]
-%   2. 删除原 chartdate 列并插入两个占位列 (#4,#5) -> [96|170324|5879088000|0|0|specimen|itemid|...]
-%   3. culture.csv 行保持原结构，如 [2|163353|243653|5318688000|3333]。
-%   4. 合并后 bacterio 的前几行示意为：
-%        [96|170324|5879088000|0|0|specimen|itemid|...]
-%        [96|170324|5879135400|0|0|specimen|itemid|...]
-%        ...
-%        [2|163353|243653|5318688000|3333]
-%        [5|178980|214757|4199839200|3333]
-%      统一后的 bacterio 既包含微生物学事件也包含培养送检事件，后续在填充 icustay_id 并与抗生素给药记录配对时只需遍历该矩阵。
-
-
+% 示例
+%{
+原始 microbio:
+subject_id|hadm_id|charttime|chartdate
+（使用的数值矩阵，没有表头这个概念，此处便于理解添加了表头） 
+96|170324|5878534680.0|5878483200.0
+96|170324|5879135400.0|5879088000.0
+96|170324|5879145600.0|5879088000.0
+96|170324||5879088000.0
+处理后 microbio:
+subject_id|hadm_id|icustay_id|charttime|itemid
+（使用的数值矩阵，没有表头这个概念，此处便于理解添加了表头） 
+96|170324|0|5878534680.0|0|
+96|170324|0|5879135400.0|0|
+96|170324|0|5879145600.0|0|
+96|170324|0|5879088000.0|0|
+---
+culture:
+subject_id|hadm_id|icustay_id|charttime|itemid
+（使用的数值矩阵，没有表头这个概念，此处便于理解添加了表头） 
+2|163353|243653.0|5318688000.0|3333
+5|178980|214757.0|4199839200.0|3333
+7|118037|236754.0|4777583400.0|3333
+8|159514|262299.0|4666858200.0|3333
+---
+microbio在上，culture在下拼接
+bacterio:
+subject_id|hadm_id|icustay_id|charttime|itemid
+（使用的数值矩阵，没有表头这个概念，此处便于理解添加了表头） 
+96|170324||5878534680.0||
+96|170324||5879135400.0||
+96|170324||5879145600.0||
+96|170324||5879088000.0||
+2|163353|243653.0|5318688000.0|3333
+5|178980|214757.0|4199839200.0|3333
+7|118037|236754.0|4777583400.0|3333
+8|159514|262299.0|4666858200.0|3333
+%}
 
 % 给人口学表 demog 中的死亡、Elixhauser 指数等缺失值置零，避免后续运算受到 NaN 影响
 % correct NaNs in DEMOG
 demog.morta_90(isnan(demog.morta_90))=0;
 demog.morta_hosp(isnan(demog.morta_hosp))=0;
 demog.elixhauser(isnan(demog.elixhauser))=0;
+
 
 % compute normalized rate of infusion
 % if we give 100 ml of hypertonic fluid (600 mosm/l) at 100 ml/h (given in 1h) it is 200 ml of NS equivalent
@@ -130,20 +155,29 @@ demog.elixhauser(isnan(demog.elixhauser))=0;
 % NS(Normal Saline, 生理盐水) osm = 300 mosm/l
 % normalized rate = 100 * (600/300) = 200 ml/h (NS equivalent)
 inputMV(:,8)=inputMV(:,7).*inputMV(:,6)./inputMV(:,5);
+% 示例
+%{
+
+
+
+%}
 
 % fill-in missing ICUSTAY IDs in bacterio
 % 目的是在拿到微生物/培养记录时即便原始提取缺了 icustay_id，也能通过患者信息和时间范围推断出
 % 属于哪次 ICU 住院，方便后续按 ICU stay 分析脓毒症事件。
 for i=1:size(bacterio,1)
 if bacterio(i,3)==0   %if missing icustayid
+    % 定义表头
     o=bacterio(i,4);  %charttime
     subjectid=bacterio(i,1);
     hadmid=bacterio(i,2);
-   ii=find(demog.subject_id==subjectid);
+   ii=find(demog.subject_id==subjectid);%返回的是列表，包含所有符合条件的demog索引值
    jj=find(demog.subject_id==subjectid & demog.hadm_id==hadmid);
     for j=1:numel(ii)
+        % sepsis3 定义：前后48小时
         if o>=demog.intime(ii(j))-48*3600 & o<=demog.outtime(ii(j))+48*3600
             bacterio(i,3)=demog.icustay_id(ii(j));
+        % 兜底，目标病人只有唯一一次 ICU 住院，直接认定这条细菌培养记录对应那次住院
         elseif numel(ii)==1   %if we cant confirm from admission and discharge time but there is only 1 admission: it's the one!!
             bacterio(i,3)=demog.icustay_id(ii(j));
         end
@@ -152,6 +186,7 @@ end
 end
 toc
 
+% 仅靠 subject_id + hadm_id”基础上再做一次时间校验和兜底
 for i=1:size(bacterio,1)
 if bacterio(i,3)==0   %if missing icustayid
     subjectid=bacterio(i,1);
@@ -164,7 +199,7 @@ end
 end
 
 % fill-in missing ICUSTAY IDs in ABx
-% 确保抗生素记录能关联到具体 ICU stay
+% 和上面同理，确保抗生素记录能关联到具体 ICU stay
 for i=1:size(abx,1)
 if isnan(abx(i,2))
     o=abx(i,3);  %time of event
@@ -184,43 +219,54 @@ disp('INITIAL DATA MANIPULATIONS END')
 
 disp('FIND PRESUMED ONSET OF INFECTION ACCORDING TO SEPSIS3 GUIDELINES START')
 % METHOD:
-% I loop through all the ABx(AntiBiotic eXceution) given, and as soon as there is a sample present
-% within the required time criteria I pick this flag and break the loop.
+% I loop through all the ABx (AntiBiotic eXecution) given, and as soon as there
+% is a sample present within the required time criteria I pick this flag and
+% break the loop.
 
-% 初始化感染发生时间的矩阵，行数为 ICU stay 数量，3 列分别存储 subject_id、icustay_id 和感染发生时间
+% 初始化疑似感染开始时间矩阵：预留 100000 行（每行对应一个 ICU stay），三列分别存放
+% 1) subject_id，2) icustay_id，3) 推断的感染发生时间。若后续 ICU stay 数量不足 100000，
+% 多余行会保持为零。
 onset = zeros(100000, 3);
-% This initializes the onset matrix for presumed infection, with 100,000 rows (one per ICU stay)
-% and 3 columns: subject_id, icustay_id, and infection onset time.
 
-for icustayid=1:100000
+for icustayid = 1:100000
 
-    ab=abx(abx(:,2)==icustayid+200000,3);   %start time of abx for this icustayid 抗生素
-    bact=bacterio(bacterio(:,3)==icustayid+200000,4);  %time of sample 微生物培养
-    subj_bact=bacterio(bacterio(:,3)==icustayid+200000,1);  %subjectid 患者ID
-    % 只有当某个住院既有抗生素又有培养数据时才继续
-    if ~isempty(ab) & ~isempty(bact)   %if we have data for both: proceed
-        
-      D = pdist2(ab, bact)/3600;  %pairwise distances btw antibio and cultures, in hours 两次事件相差的小时数
-    %   每次 ICU 住院挑出最合理的“感染起点”时间，后续定义 Sepsis-3 的时间窗
-      for i=1:size(D,1)  % looping through all rows of AB given, from early to late
-        [M,I] = min(D(i,:));   %minimum distance in this row
-        ab1=ab(i);       %timestamp of this value in list of antibio
-        bact1=bact(I);      %timestamp in list of cultures
-              
-        if M<=24 && ab1<=bact1      %if ab was first and delay < 24h
-            onset(icustayid,1)=subj_bact(1);   %subject_id
-            onset(icustayid,2)=icustayid;       % icustay_id
-            onset(icustayid,3)=ab1;     %onset of infection = abx time
-              icustayid
-            break
-        elseif M<=72 && ab1>=bact1    %elseif sample was first and delay < 72h
-            onset(icustayid,1)=subj_bact(1);
-            onset(icustayid,2)=icustayid;
-            onset(icustayid,3)=bact1;       %onset of infection = sample time
-            break
+    % 按照 ICU stay（原始 id +200000）取出该住院的所有抗生素给药时间戳，单位秒
+    % 在 sepsis_mimiciii.csv 中，icustayid是以200000开头的，例如200003，200855，203232等
+    ab = abx(abx(:,2) == icustayid + 200000, 3);
+
+    % 为同一 ICU stay 抽取所有微生物培养采样时间戳，以及对应的 subject_id
+    bact = bacterio(bacterio(:,3) == icustayid + 200000, 4);
+    subj_bact = bacterio(bacterio(:,3) == icustayid + 200000, 1);
+
+    % 只有同时存在抗生素和培养记录时才有可能识别感染起点
+    if ~isempty(ab) && ~isempty(bact)
+
+        % 计算所有抗生素与培养时间的两两距离，换算成小时，为判定时间窗做准备
+        D = pdist2(ab, bact) / 3600;
+
+        % 把抗生素给药按时间顺序逐条检查，从最早的事件往后找匹配的培养记录
+        for i = 1:size(D, 1)
+            [M, I] = min(D(i,:));    % 找出当前抗生素与所有培养之间的最小时间差
+            ab1 = ab(i);
+            bact1 = bact(I);
+            % If the culture is obtained, the antibiotic is required to be administered within 72 hours, whereas if the antibiotic is first, the culture is required within 24 hours.
+            % 详细信息见：https://pmc.ncbi.nlm.nih.gov/articles/PMC4968574/#S17:~:text=For%20example%2C%20if%20the%20culture%20is%20obtained%2C%20the%20antibiotic%20is%20required%20to%20be%20administered%20within%2072%20hours%2C%20whereas%20if%20the%20antibiotic%20is%20first%2C%20the%20culture%20is%20required%20within%2024%20hours.
+            % 情形1：先给抗生素、后采样，间隔不超过 24 小时 -> 取抗生素时间为感染起点
+            if M <= 24 && ab1 <= bact1
+                onset(icustayid,1) = subj_bact(1);
+                onset(icustayid,2) = icustayid;
+                onset(icustayid,3) = ab1;
+                break
+
+            % 情形2：先采样、后给抗生素，间隔不超过 72 小时 -> 取采样时间为感染起点
+            elseif M <= 72 && ab1 >= bact1
+                onset(icustayid,1) = subj_bact(1);
+                onset(icustayid,2) = icustayid;
+                onset(icustayid,3) = bact1;
+                break
+            end
         end
-      end
-    end    
+    end
 end
 toc
 

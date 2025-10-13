@@ -42,3 +42,8 @@ External files and toolboxes used:
 
 - MDP toolbox (some functions modified):  https://uk.mathworks.com/matlabcentral/fileexchange/25786-markov-decision-processes--mdp--toolbox
 - Fastknnsearch : https://uk.mathworks.com/matlabcentral/fileexchange/19345-efficient-k-nearest-neighbor-search-using-jit
+
+
+
+多中心验证：
+使用mimic和eicu分别验证，首先验证mimic，如果eicu效果好的话验证eicu，如果eicu效果好那么就是一个好模型
