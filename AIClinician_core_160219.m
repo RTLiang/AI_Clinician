@@ -31,7 +31,21 @@
 % The original cohort from the 2018 Nature Medicine publication was built using MIMIC-III v1.3.
 
 % ############################  MODEL PARAMETERS   #####################################
+diary off
+delete('AIClinician_core_log.txt');
 diary('AIClinician_core_log.txt');  %saves command window output to text file
+
+% ensure MDP toolbox helper functions (e.g., mdp_verbose) are on the path
+core_dir = fileparts(mfilename('fullpath'));
+mdp_toolbox_dir = fullfile(core_dir, 'MDPtoolbox');
+if ~isfolder(mdp_toolbox_dir)
+    error('AIClinician:MissingMDPToolbox', ...
+        'Expected MDP toolbox directory at %s. Update RUN_SOP.md if relocated.', mdp_toolbox_dir);
+end
+addpath(mdp_toolbox_dir);
+
+load("BACKUP MIT PC\MIMICtable.mat")
+load("exportdir\eicu\eICUtable_ready.mat")
 disp('####  INITIALISATION  ####') 
 
 nr_reps=500;               % nr of repetitions (total nr models)
