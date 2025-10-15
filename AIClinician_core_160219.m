@@ -32,6 +32,21 @@
 
 % ############################  MODEL PARAMETERS   #####################################
 clear all; close all; clc %清除工作区里不用的变量，减少内存占用
+
+
+v = ver;  % 获取当前安装的工具箱列表
+installed = {v.Name};
+requiredToolboxes = {'Parallel Computing Toolbox', 'Curve Fitting Toolbox'};
+
+for i = 1:numel(requiredToolboxes)
+    if ~ismember(requiredToolboxes{i}, installed)
+        error(['❌ Missing required toolbox: ', requiredToolboxes{i}, ...
+               '. Please install it via Add-On Explorer before running this script.']);
+    end
+end
+
+disp('✅ All required toolboxes are installed.');
+
 diary off
 % delete('AIClinician_core_log.txt');
 diary('AIClinician_core_log.txt');  %saves command window output to text file
