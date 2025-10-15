@@ -31,6 +31,7 @@
 % The original cohort from the 2018 Nature Medicine publication was built using MIMIC-III v1.3.
 
 % ############################  MODEL PARAMETERS   #####################################
+clear all; close all; clc %清除工作区里不用的变量，减少内存占用
 diary off
 % delete('AIClinician_core_log.txt');
 diary('AIClinician_core_log.txt');  %saves command window output to text file
