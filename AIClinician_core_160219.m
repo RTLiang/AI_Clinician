@@ -87,7 +87,15 @@ if ~isempty(resumeInfo)
     state.isRunning = false;
     state.shouldStop = false;
     coreSetState(trainingUI.figure,state);
-    updateTrainingStatus(trainingUI, sprintf('Loaded checkpoint (%d/%d). Press Start to resume.', startIter, nr_reps));
+    % In headless mode, auto-start; otherwise prompt user to press Start
+    if isfield(trainingUI,'headless') && trainingUI.headless
+        state = coreGetState(trainingUI.figure);
+        state.isRunning = true;
+        coreSetState(trainingUI.figure,state);
+        updateTrainingStatus(trainingUI, sprintf('Loaded checkpoint (%d/%d). Auto-resuming (headless).', startIter, nr_reps));
+    else
+        updateTrainingStatus(trainingUI, sprintf('Loaded checkpoint (%d/%d). Press Start to resume.', startIter, nr_reps));
+    end
 else
     updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
 end
@@ -176,13 +184,19 @@ if ~isreal(eICUzs)
     eICUzs = real(eICUzs);
 end
 
-if sum(isnan(eICUraw(:,4))) >0 || sum(isnan(eICUraw(:,45)))>0;  disp('NaNs in Xtest / drug doses'); disp('EXECUTION STOPPED'); return;end
+if sum(isnan(eICUraw(:,4))) >0 || sum(isnan(eICUraw(:,45)))>0
+    disp('NaNs in Xtest / drug doses');
+    disp('EXECUTION STOPPED');
+    coreSafeCleanup(trainingUI);
+    return;
+end
 p=gcp('nocreate'); if isempty(p) ; pool = parpool; end ; mdp_verbose
 stream = RandStream('mlfg6331_64'); options = statset('UseParallel',1,'UseSubstreams',1,'Streams',stream); warning('off','all')
 
 
 if ~uiEnsureRunning(trainingUI, startIter, nr_reps, checkpointPath, recqvi, OA, idxs, allpols, polkeep)
     updateTrainingStatus(trainingUI, 'Training stopped before start.');
+    coreSafeCleanup(trainingUI);
     return;
 end
 
@@ -464,11 +478,34 @@ recqvi(modl,24)=quantile(bootmimictestwis,0.05);  %AI 95% LB, we want this as hi
 
 if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model
 drawnow limitrate;
-if ~uiProcessRequests(trainingUI, checkpointPath, modl, nr_reps, recqvi, OA, idxs, allpols, polkeep)
-    trainingCanceled = true;
-    updateTrainingStatus(trainingUI, sprintf('Training halted at model %d/%d.', modl, nr_reps));
-    break;
-end
+  if ~uiProcessRequests(trainingUI, checkpointPath, modl, nr_reps, recqvi, OA, idxs, allpols, polkeep)
+      trainingCanceled = true;
+      updateTrainingStatus(trainingUI, sprintf('Training halted at model %d/%d.', modl, nr_reps));
+      break;
+  end
+
+  % Auto-save a checkpoint every 10 models
+  if mod(modl,10) == 0
+      try
+          if isfield(trainingUI,'figure') && ~isempty(trainingUI.figure) && ishandle(trainingUI.figure)
+              st = coreGetState(trainingUI.figure);
+              elapsedSeconds = coreElapsedSeconds(st);
+          else
+              elapsedSeconds = 0;
+          end
+      catch
+          elapsedSeconds = 0;
+      end
+      try
+          savedPath = saveTrainingCheckpoint(checkpointPath, modl, recqvi, OA, idxs, allpols, polkeep, elapsedSeconds, nr_reps);
+          updateTrainingStatus(trainingUI, sprintf('Auto-checkpoint saved at model %d: %s', modl, savedPath));
+      catch saveErr
+          warning('AIClinician:AutoCheckpointFailed','Auto-checkpoint failed at model %d: %s', modl, saveErr.message);
+      end
+  end
+
+% Rest between models to reduce CPU load
+ pause(30); % fixed cooldown between models
 
 disp('########################## eICU TEST SET #############################')
 
@@ -622,6 +659,7 @@ coreSetState(trainingUI.figure,state);
 
 if trainingCanceled
     updateTrainingStatus(trainingUI, 'Training stopped by user. Skipping post-processing.');
+    coreSafeCleanup(trainingUI);
     return;
 end
 
@@ -1317,24 +1355,59 @@ for i=1:5
 [min(reformat5(io==i,iol)) median(reformat5(io==i,iol)) max(reformat5(io==i,iol))]
 end
 
+% Ensure parallel pool is closed when the script ends normally
+poolobj = gcp('nocreate');
+if ~isempty(poolobj)
+    try, delete(poolobj); catch, end
+end
+
 diary off  
 
 function resumeInfo = maybeLoadCheckpoint(trainingUI, defaultPath, totalIter)
 %MAYBELOADCHECKPOINT Optionally resume from an existing checkpoint.
 resumeInfo = [];
-choice = questdlg('Load an existing training checkpoint?', 'Resume Training', 'Yes', 'No', 'No');
-if ~strcmp(choice,'Yes')
-    return;
+headless = isfield(trainingUI,'headless') && trainingUI.headless;
+envPath = strtrim(getenv('AICL_RESUME_CHECKPOINT'));
+if headless
+    % Headless/batch mode: pick env-provided path or latest checkpoint automatically
+    if ~isempty(envPath) && exist(envPath,'file')==2
+        fullPath = envPath;
+    else
+        if nargin < 2 || isempty(defaultPath)
+            defaultPath = pwd;
+        end
+        [defaultFolder, ~, ~] = fileparts(defaultPath);
+        if isempty(defaultFolder)
+            defaultFolder = pwd;
+        end
+        files = dir(fullfile(defaultFolder,'AIClinician_core_checkpoint_iter*.mat'));
+        if isempty(files)
+            % Try also any AIClinician_core_checkpoint*.mat
+            files = dir(fullfile(defaultFolder,'AIClinician_core_checkpoint*.mat'));
+        end
+        if isempty(files)
+            updateTrainingStatus(trainingUI, 'No checkpoint found. Starting fresh.');
+            return;
+        end
+        [~, newestIdx] = max([files.datenum]);
+        fullPath = fullfile(files(newestIdx).folder, files(newestIdx).name);
+    end
+else
+    % Interactive mode: ask the user
+    choice = questdlg('Load an existing training checkpoint?', 'Resume Training', 'Yes', 'No', 'No');
+    if ~strcmp(choice,'Yes')
+        return;
+    end
+    if nargin < 2 || isempty(defaultPath)
+        defaultPath = pwd;
+    end
+    [fileName, folderName] = uigetfile('*.mat','Select checkpoint to resume', defaultPath);
+    if isequal(fileName,0)
+        updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
+        return;
+    end
+    fullPath = fullfile(folderName,fileName);
 end
-if nargin < 2 || isempty(defaultPath)
-    defaultPath = pwd;
-end
-[fileName, folderName] = uigetfile('*.mat','Select checkpoint to resume', defaultPath);
-if isequal(fileName,0)
-    updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
-    return;
-end
-fullPath = fullfile(folderName,fileName);
 try
     loaded = load(fullPath,'checkpointData');
 catch loadErr
@@ -1382,26 +1455,39 @@ end
 
 function ui = setupTrainingUI()
 %SETUPTRAININGUI Create control panel for interactive training.
-fig = figure('Name','AI Clinician Training Control', ...
-    'NumberTitle','off','MenuBar','none','ToolBar','none','Resize','off', ...
-    'Position',[100 100 320 180],'CloseRequestFcn',@onClose);
-ui.figure = fig;
-ui.startButton = uicontrol(fig,'Style','pushbutton','String','Start / Resume', ...
-    'Position',[20 120 120 30],'Callback',@onStart);
-ui.pauseButton = uicontrol(fig,'Style','pushbutton','String','Pause', ...
-    'Position',[180 120 120 30],'Callback',@onPause);
-ui.saveButton = uicontrol(fig,'Style','pushbutton','String','Save Checkpoint', ...
-    'Position',[20 70 120 30],'Callback',@onSave);
-ui.stopButton = uicontrol(fig,'Style','pushbutton','String','Stop', ...
-    'Position',[180 70 120 30],'Callback',@onStop);
-ui.statusLabel = uicontrol(fig,'Style','text','String','Idle.', ...
-    'HorizontalAlignment','left','Position',[20 20 280 30], ...
-    'BackgroundColor',get(fig,'Color'));
+ui = struct();
+headless = ~(usejava('desktop') && usejava('awt'));
+ui.headless = headless;
+if headless
+    % No UI elements in headless/batch mode
+    ui.figure = [];
+    ui.startButton = [];
+    ui.pauseButton = [];
+    ui.saveButton = [];
+    ui.stopButton = [];
+    ui.statusLabel = [];
+else
+    fig = figure('Name','AI Clinician Training Control', ...
+        'NumberTitle','off','MenuBar','none','ToolBar','none','Resize','off', ...
+        'Position',[100 100 320 180],'CloseRequestFcn',@onClose);
+    ui.figure = fig;
+    ui.startButton = uicontrol(fig,'Style','pushbutton','String','Start / Resume', ...
+        'Position',[20 120 120 30],'Callback',@onStart);
+    ui.pauseButton = uicontrol(fig,'Style','pushbutton','String','Pause', ...
+        'Position',[180 120 120 30],'Callback',@onPause);
+    ui.saveButton = uicontrol(fig,'Style','pushbutton','String','Save Checkpoint', ...
+        'Position',[20 70 120 30],'Callback',@onSave);
+    ui.stopButton = uicontrol(fig,'Style','pushbutton','String','Stop', ...
+        'Position',[180 70 120 30],'Callback',@onStop);
+    ui.statusLabel = uicontrol(fig,'Style','text','String','Idle.', ...
+        'HorizontalAlignment','left','Position',[20 20 280 30], ...
+        'BackgroundColor',get(fig,'Color'));
 
-state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
-    'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
-setappdata(fig,'coreTrainState',state);
-setappdata(fig,'coreTrainUIHandles',ui);
+    state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
+        'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
+    setappdata(fig,'coreTrainState',state);
+    setappdata(fig,'coreTrainUIHandles',ui);
+end
 end
 
 function updateTrainingStatus(ui, message)
@@ -1409,7 +1495,11 @@ function updateTrainingStatus(ui, message)
 if nargin < 2 || isempty(message)
     message = '';
 end
-if ~isfield(ui,'figure') || ~ishandle(ui.figure)
+if ~isfield(ui,'figure') || isempty(ui.figure) || ~ishandle(ui.figure)
+    % Headless or no UI: print to console only
+    if ~isempty(message)
+        try, fprintf('%s\n', message); catch, end
+    end
     return;
 end
 state = coreGetState(ui.figure);
@@ -1456,8 +1546,13 @@ end
 function keepRunning = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep)
 %UIENSURERUNNING Block until training may continue or stop flag triggered.
 keepRunning = true;
+% In headless mode (no UI), never block
+if isfield(ui,'headless') && ui.headless
+    return;
+end
 while true
     if ~ishandle(ui.figure)
+        % UI window closed: stop training
         keepRunning = false;
         return;
     end
@@ -1490,7 +1585,11 @@ end
 
 function continueFlag = uiProcessRequests(ui, checkpointPath, currentIter, totalIter, recqvi, OA, idxs, allpols, polkeep)
 %UIPROCESSREQUESTS Handle pause/stop/save requests at safe checkpoints.
-continueFlag = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep);
+if isfield(ui,'headless') && ui.headless
+    continueFlag = true;
+else
+    continueFlag = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep);
+end
 end
 
 function state = coreGetState(fig)
@@ -1577,6 +1676,11 @@ state.isRunning = false;
 coreSetState(fig,state);
 ui = getUIFromFigure(fig);
 updateTrainingStatus(ui,'Stop requested.');
+% Proactively close parallel pool on stop
+poolobj = gcp('nocreate');
+if ~isempty(poolobj)
+    try, delete(poolobj); catch, end
+end
 end
 
 function onSave(src,~)
@@ -1598,6 +1702,11 @@ state.shouldStop = true;
 state.isRunning = false;
 coreSetState(fig,state);
 delete(fig);
+% Close any existing parallel pool when window closes
+poolobj = gcp('nocreate');
+if ~isempty(poolobj)
+    try, delete(poolobj); catch, end
+end
 end
 
 function ui = getUIFromFigure(fig)
@@ -1623,4 +1732,22 @@ if ~isfield(ui,'saveButton') || ~ishandle(ui.saveButton)
     ui.saveButton = findobj(fig,'String','Save Checkpoint');
 end
 setappdata(fig,'coreTrainUIHandles',ui);
+end
+
+function coreSafeCleanup(ui)
+%CORESAFECLEANUP Close parpool and stop diary safely on early returns.
+try
+    poolobj = gcp('nocreate');
+    if ~isempty(poolobj)
+        delete(poolobj);
+    end
+catch
+end
+try
+    if isfield(ui,'figure') && ~isempty(ui.figure) && ishandle(ui.figure)
+        delete(ui.figure);
+    end
+catch
+end
+try diary off; catch, end
 end
