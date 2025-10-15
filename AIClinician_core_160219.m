@@ -31,6 +31,21 @@
 % The original cohort from the 2018 Nature Medicine publication was built using MIMIC-III v1.3.
 
 % ############################  MODEL PARAMETERS   #####################################
+
+
+v = ver;  % 获取当前安装的工具箱列表
+installed = {v.Name};
+requiredToolboxes = {'Parallel Computing Toolbox', 'Curve Fitting Toolbox'};
+
+for i = 1:numel(requiredToolboxes)
+    if ~ismember(requiredToolboxes{i}, installed)
+        error(['❌ Missing required toolbox: ', requiredToolboxes{i}, ...
+               '. Please install it via Add-On Explorer before running this script.']);
+    end
+end
+
+disp('✅ All required toolboxes are installed.');
+
 diary off
 % delete('AIClinician_core_log.txt');
 diary('AIClinician_core_log.txt');  %saves command window output to text file
