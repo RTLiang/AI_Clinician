@@ -32,7 +32,7 @@ load('reference_matrices.mat', 'Reflabs', 'Refvitals', 'sample_and_hold');
 disp('IMPORT ALL DATA START')
 % 计时器启动
 tic
-%{
+
 % 'culture' items
 culture=table2array(readtable('./exportdir/culture.csv'));
 %  Microbiologyevents
@@ -85,7 +85,7 @@ vasoCV=table2array(readtable('./exportdir/vaso_cv.csv'));
 % Mechanical ventilation
 MV=table2array(readtable('./exportdir/mechvent.csv'));
 
-%}
+
 
 % 计时器结束
 toc
@@ -424,7 +424,7 @@ if t
 for i=1:numel(t)
     % 维度总览：reformat = NaN(2000000, 68)，前3列元数据，4..31为生命体征，32..66为化验，67..68为机械通气
 
-    没看懂后面的算法，但总之是把三路数据按时间戳合并到 reformat 里，表头信息在 reference_matrices.mat 的 sample_and_hold 表格里面。
+    % 没看懂后面的算法，但总之是把三路数据按时间戳合并到 reformat 里，表头信息在 reference_matrices.mat 的 sample_and_hold 表格里面。
 
     % ''Height_cm''	''Weight_kg''	''GCS''	''RASS''	''HR''	''SysBP''	''MeanBP''	''DiaBP''	''RR''	''SpO2''	''Temp_C''	''Temp_F''	''CVP''	''PAPsys''	''PAPmean''	''PAPdia''	''CI''	''SVR''	''Interface''	''FiO2_100''	''FiO2_1''	''O2flow''	''PEEP''	''TidalVolume''	''MinuteVentil''	''PAWmean''	''PAWpeak''	''PAWplateau''	''Potassium''	''Sodium''	''Chloride''	''Glucose''	''BUN''	''Creatinine''	''Magnesium''	''Calcium''	''Ionised_Ca''	''CO2_mEqL''	''SGOT''	''SGPT''	''Total_bili''	''Direct_bili''	''Total_protein''	''Albumin''	''Troponin''	''CRP''	''Hb''	''Ht''	''RBC_count''	''WBC_count''	''Platelets_count''	''PTT''	''PT''	''ACT''	''INR''	''Arterial_pH''	''paO2''	''paCO2''	''Arterial_BE''	''Arterial_lactate''	''HCO3''	''ETCO2''	''SvO2''	''mechvent''	''extubated''
 
@@ -1229,3 +1229,6 @@ size(sepsis,1)
 % 保存队列至 CSV（已去标识，只含汇总指标与时间旗标）
 writetable(sepsis,'sepsis_mimiciii.csv','Delimiter',',');
 disp('CREATE SEPSIS COHORT END')
+
+
+save('./BACKUP/AIClinician_sepsis3_def_160219.mat')

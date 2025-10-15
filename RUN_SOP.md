@@ -11,10 +11,14 @@
 - 在具备 PHI 保护措施的环境内工作，任何原始数据禁止写入 Git 仓库。
 
 ## MATLAB 工具箱要求
+`AIClinician_sepsis3_def_160219.m`, `AIClinician_sepsis3_def_160219.m` 需要：
 - Statistics and Machine Learning Toolbox
+- Bioinformatics Toolbox
+
+`AIClinician_core_160219.m` 需要：
 - Parallel Computing Toolbox
 - Curve Fitting Toolbox
-- Bioinformatics Toolbox
+
 
 
 ## 运行流程总览

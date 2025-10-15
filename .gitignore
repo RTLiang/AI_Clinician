@@ -12,3 +12,6 @@ exportdir/eicu/*.mat
 __pycache__
 *.pyc
 .ds_store
+BACKUP
+AIClinician_core_checkpoint*
+AIClinician_core_log.txt

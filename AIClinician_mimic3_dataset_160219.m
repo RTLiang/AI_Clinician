@@ -1,5 +1,13 @@
 %% AI Clinician Building MIMIC-III dataset 
 
+% 本脚本注释说明
+% -------------------------------------------------------------------------
+% 目的：在已识别的 Sepsis-3 队列基础上，围绕疑似感染时间重建 4 小时步长的特征时间序列，
+%       清洗/插补/派生变量，最终生成供 MDP 学习与评估的 MIMICtable。
+% 关系与差异：
+% - 上游（Sepsis 脚本）用于筛选队列（-48 → +24），本脚本用于构建策略学习数据（-24 → +48）。
+% - 两者有重叠的清洗/派生步骤，但服务的目标与时间窗不同。
+
 % (c) Matthieu Komorowski, Imperial College London 2015-2019
 % as seen in publication: https://www.nature.com/articles/s41591-018-0213-5
 
@@ -14,22 +22,36 @@
 %           INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT
 % ########################################################################
 
+load('./BACKUP/AIClinician_sepsis3_def_160219.mat')
+
 disp('INITIAL REFORMAT START');
 
 % gives an array with all unique charttime (1 per row) and all items in columns.
 % ################## IMPORTANT !!!!!!!!!!!!!!!!!!
 % Here i use -24 -> +48 because that's for the MDP
+% MDP 的时间范围是 -24 -> +48，与 sepsis3 定义的 -48 -> +24 不同
+% 注：为避免 4h 分箱边界截断，原始时间戳筛选时额外加入 ±4h 缓冲，
+%     后续再在固定 80 小时时间带内（约 -28 → +52）做聚合。
 
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
-reformat=NaN(2000000,68);  %final table 
-qstime=zeros(100000,4);
-winb4=25;   %lower limit for inclusion of data (48h before time flag)
-winaft=49;  % upper limit (24h after)
-irow=1;  %recording row for summary table
-h = waitbar(0,'Initializing waitbar...');
+reformat=NaN(2000000,68);  % 原始“逐时间点”宽表（行：时间点；列：变量）
+qstime=zeros(100000,4);    % 每个 stay 的关键时间：[疑似感染, 首条时间, 末条时间, 出院时间]
+winb4=25;                  % 前窗（小时）：24h + 1h 缓冲（配合下方 ±4h）
+winaft=49;                 % 后窗（小时）：48h + 1h 缓冲
+irow=1;                    % reformat 写入行指针
+h = waitbar(0,'Initializing waitbar...');  % 进度条
 
 tic
-for icustayidrow=1:size(sepsis,1)
+
+% sepsis表头：
+% 1 icustayid（真实编号）
+% 2 morta_90d（90天死亡）
+% 3 max_sofa（窗口内最大 SOFA）
+% 4 max_sirs（窗口内最大 SIRS）
+% 5 sepsis_time（疑似感染起点 qst）
+
+for icustayidrow=1:size(sepsis,1)  % 逐条遍历已筛出的 sepsis 队列（每行一个 ICU stay）
     
 qst=sepsis.sepsis_time(icustayidrow);%,3); %flag for presumed infection
 icustayid=sepsis.icustayid(icustayidrow)-200000;
@@ -59,6 +81,7 @@ waitbar(icustayidrow/size(sepsis,1),h,icustayidrow/size(sepsis,1)*100) %moved he
     temp=ce90100(ce90100(:,1)==icustayid+200000,:);
     end
 
+% 4h 分箱缓冲：在理论窗口两端各延伸 4h，避免分箱边界问题
 ii=temp(:,2)>= qst-(winb4+4)*3600 & temp(:,2)<=qst+(winaft+4)*3600; %time period of interest -4h and +4h
 temp=temp(ii,:);   %only time period of interest
 
@@ -74,12 +97,12 @@ temp3=MV(ii,:);
 ii=temp3(:,2)>= qst-(winb4+4)*3600 & temp3(:,2)<=qst+(winaft+4)*3600; %time period of interest -4h and +4h
 temp3=temp3(ii,:);   %only time period of interest
 
-t=unique([temp(:,2);temp2(:,2); temp3(:,2)]);   %list of unique timestamps from all 3 sources / sorted in ascending order
+t=unique([temp(:,2);temp2(:,2); temp3(:,2)]);   % 三路时间戳合并去重，升序排列
 
 if t
 for i=1:numel(t)
     
-    %CHARTEVENTS
+    %CHARTEVENTS（第1列=序号；第2列=内部icustayid；第3列=charttime）：
     ii=temp(:,2)==t(i);
     col=temp(ii,3);
     value=temp(ii,4);  
@@ -88,13 +111,13 @@ for i=1:numel(t)
     reformat(irow,3)=t(i); %charttime
     reformat(irow,3+col)=value; %store available values
       
-    %LAB VALUES
+    %LAB VALUES：按映射后的列号直接落位到宽表
     ii=temp2(:,2)==t(i);
     col=temp2(ii,3);
     value=temp2(ii,4);
     reformat(irow,31+col)=value; %store available values
       
-    %MV  
+    %MV  机械通气/拔管标志（若此时刻存在则写入，否则置 NaN）
     ii=temp3(:,2)==t(i);
     if nansum(ii)>0
     value=temp3(ii,3:4);
@@ -107,8 +130,8 @@ for i=1:numel(t)
      
 end
 
+% 记录本 stay 的关键时间，用于后续派生/校验
 qstime(icustayid,1)=qst; %time of sepsis
-%HERE I SAVE FIRST and LAST TIMESTAMPS, in QSTIME, for each ICUSTAYID
 qstime(icustayid,2)=t(1);  %first timestamp
 qstime(icustayid,3)=t(end);  %last timestamp
 qstime(icustayid,4)=table2array(demog(demog.icustay_id==icustayid+200000,5)); % discharge time
@@ -120,7 +143,7 @@ end
 toc
 
 close(h);
-reformat(irow:end,:)=[];  %delete extra unused rows
+reformat(irow:end,:)=[];  %delete extra unused rows（裁掉未使用的预分配行）
 
 disp('INITIAL REFORMAT END');
 
@@ -130,6 +153,8 @@ disp('INITIAL REFORMAT END');
 % ########################################################################
 
 disp('OUTLIER CLEANING START');
+% 说明：按变量物理/生理范围做异常值截断与单位纠偏；列索引含义与上游脚本一致。
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 %weight
 reformat=deloutabove(reformat,5,300);  %delete outlier above a threshold (300 kg), for variable # 5
@@ -248,6 +273,9 @@ disp('OUTLIER CLEANING END');
 % some more data manip / imputation from existing values
 
 disp('DATA MANIPULATION START');
+% 说明：基于变量间已知关系做进一步补全/纠偏（如 RASS→GCS、FiO2 百分比/小数互转、温度单位互换、
+%       Hb/Ht 互推、Total/Direct_bili 线性关系等）。
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 % estimate GCS from RASS - data from Wesley JAMA 2003
 ii=isnan(reformat(:,6))&reformat(:,7)>=0;
@@ -362,6 +390,7 @@ disp('DATA MANIPULATION END');
 %% ########################################################################
 %                      SAMPLE AND HOLD on RAW DATA
 % ########################################################################
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 disp('SAMPLE AND HOLD START');
 
@@ -375,21 +404,28 @@ disp('SAMPLE AND HOLD END');
 % ########################################################################
 
 disp('DATA COMBINATION START');
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 tic
-     save('./BACKUP MIT PC/Data_100219.mat', '-v7.3');
+     save('./BACKUP/dataset_before_combination', '-v7.3');
 toc
 
 
-% WARNING: the time window of interest has been defined above (here -48 -> +24)! 
+% WARNING: the time window of interest has been defined above (here -24 -> +48)!
 
-timestep=4;  %resolution of timesteps, in hours
-irow=1;
-icustayidlist=unique(reformat(:,2));
-reformat2=nan(size(reformat,1),84);  %output array
+timestep=4;  % 分箱步长（小时）
+irow=1;      % reformat2 写指针
+icustayidlist=unique(reformat(:,2));  % 需要聚合的 ICU stay 内部索引列表
+reformat2=nan(size(reformat,1),84);   % 输出宽表（4h 槽 × 特征），84 列布局如下：
+%  1=bloc（timestep 序号）  2=icustayid（内部索引）  3=t0（槽左边界时间戳）
+%  4:11=人口学与结局（gender, age, elixhauser, re_admission, died_in_hosp,
+%       died_within_48h_of_out_time, mortality_90d, delay_end_of_record...）
+%  12:78=生命体征+化验（来自 reformat 第 4..end 的聚合均值）
+%  79:80=升压药剂量：median_dose_vaso / max_dose_vaso（4h 槽内）
+%  81:84=液体与尿量：input_total / input_4hourly / output_total / output_4hourly
 h = waitbar(0,'Initializing waitbar...');
-npt=numel(icustayidlist);  %number of patients
-% Adding 2 empty cols for future shock index=HR/SBP and P/F
+npt=numel(icustayidlist);  % 住院数
+% 为 Shock_Index / PaO2_FiO2 预留空列（稍后派生再赋值）
 reformat(:,69:70)=NaN(size(reformat,1),2);
 
 tic
@@ -401,24 +437,25 @@ for i=1:npt
         temp=reformat(reformat(:,2)==icustayid,:);   %subtable of interest
         beg=temp(1,3);   %timestamp of first record
     
-        % IV FLUID STUFF
+        % IV 液体（输入量）：MetaVision 连续记录 + CareVue 事件
         iv=find(inputMV(:,1)==icustayid+200000);   %rows of interest in inputMV
         input=inputMV(iv,:);    %subset of interest
         iv=find(inputCV(:,1)==icustayid+200000);   %rows of interest in inputCV
         input2=inputCV(iv,:);    %subset of interest
-        startt=input(:,2); %start of all infusions and boluses
-        endt=input(:,3); %end of all infusions and boluses
-        rate=input(:,8);  %rate of infusion (is NaN for boluses)
+        startt=input(:,2); % 连续/推注开始时间（秒）
+        endt=input(:,3);   % 连续/推注结束时间（秒）
+        rate=input(:,8);   % 连续输注速率（推注处为 NaN）
         
-        pread=inputpreadm(inputpreadm(:,1)==icustayid+200000,2) ;%preadmission volume
-            if ~isempty(pread)             %store the value, if available
-                totvol=nansum(pread);
-                waitbar(i/npt,h,i/npt*100) %moved here to save some time
-            else
-                totvol=0;   %if not documented: it's zero
-            end
+        % 入科前输入量作为累计入量起点
+        pread=inputpreadm(inputpreadm(:,1)==icustayid+200000,2) ;
+        if ~isempty(pread)
+            totvol=nansum(pread);  % 初始累计入量（mL）
+            waitbar(i/npt,h,i/npt*100)
+        else
+            totvol=0;
+        end
        
-        % compute volume of fluid given before start of record!!!
+        % 记录开始前的输入量（以 beg 为界）：连续输注四种区间相交情形 + 推注事件量
         t0=0;
         t1=beg;
         %input from MV (4 ways to compute)
@@ -427,23 +464,24 @@ for i=1:npt
         bolus=nansum(input(isnan(input(:,6))& input(:,2)>=t0&input(:,2)<=t1,7)) + nansum(input2(input2(:,2)>=t0&input2(:,2)<=t1,5));  
         totvol=nansum([totvol,infu,bolus]); 
             
-        %VASOPRESSORS    
+        % 升压药（VASOPRESSORS）：MetaVision 连续 + CareVue 事件
         iv=find(vasoMV(:,1)==icustayid+200000);   %rows of interest in vasoMV
         vaso1=vasoMV(iv,:);    %subset of interest
         iv=find(vasoCV(:,1)==icustayid+200000);   %rows of interest in vasoCV
         vaso2=vasoCV(iv,:);    %subset of interest
-        startv=vaso1(:,3); %start of VP infusion
-        endv=vaso1(:,4); %end of VP infusions
-        ratev=vaso1(:,5);  %rate of VP infusion
+        startv=vaso1(:,3); % 连续输注开始
+        endv=vaso1(:,4);   % 连续输注结束
+        ratev=vaso1(:,5);  % 连续输注速率
             
 
-        %DEMOGRAPHICS / gender, age, elixhauser, re-admit, died in hosp?, died within
-        %48h of out_time (likely in ICU or soon after), died within 90d after admission?        
+        % 人口学与结局（8 列）：gender / age / elixhauser / re-admission /
+        % died_in_hosp / died_within_48h_of_out_time / morta_90d /
+        % delay_end_of_record_and_discharge_or_death（小时）
         demogi=find(demog.icustay_id==icustayid+200000);        
         dem=[  demog.gender(demogi) ; demog.age(demogi) ;demog.elixhauser(demogi) ; demog.adm_order(demogi)>1 ;  demog.morta_hosp(demogi); abs(demog.dod(demogi)-demog.outtime(demogi))<(24*3600*2); demog.morta_90(demogi) ; (qstime(icustayid,4)-qstime(icustayid,3))/3600];     
         
         
-        % URINE OUTPUT
+        % 尿量（URINE OUTPUT）：入科前尿量作为累计起点 + 记录开始前尿量
         iu=find(UO(:,1)==icustayid+200000);   %rows of interest in inputMV
         output=UO(iu,:);    %subset of interest
         pread=UOpreadm(UOpreadm(:,1)==icustayid,4) ;%preadmission UO
@@ -457,22 +495,22 @@ for i=1:npt
         UOtot=nansum([UOtot UOnow]);
     
     
-    for j=0:timestep:79 % -28 until +52 = 80 hours in total
-        t0=3600*j+ beg;   %left limit of time window
-        t1=3600*(j+timestep)+beg;   %right limit of time window
-        ii=temp(:,3)>=t0 & temp(:,3)<=t1;  %index of items in this time period
+    for j=0:timestep:79 % 固定 80 小时（-28 → +52），与理论窗口（-24 → +48）边界对齐
+        t0=3600*j+ beg;                 % 槽左边界（秒）
+        t1=3600*(j+timestep)+beg;       % 槽右边界（秒）
+        ii=temp(:,3)>=t0 & temp(:,3)<=t1;  % 本槽内的观测行
         if sum(ii)>0
             
             
         %ICUSTAY_ID, OUTCOMES, DEMOGRAPHICS
-        reformat2(irow,1)=(j/timestep)+1;   %'bloc' = timestep (1,2,3...)
-        reformat2(irow,2)=icustayid;        %icustay_ID
-        reformat2(irow,3)=3600*j+ beg;      %t0 = lower limit of time window
-        reformat2(irow,4:11)=dem;           %demographics and outcomes
+        reformat2(irow,1)=(j/timestep)+1;   % bloc：时间槽序号（1..）
+        reformat2(irow,2)=icustayid;        % icustayid：内部索引
+        reformat2(irow,3)=3600*j+ beg;      % t0：槽左边界时间戳
+        reformat2(irow,4:11)=dem;           % 人口学与结局（8 列）
             
         
-        %CHARTEVENTS and LAB VALUES (+ includes empty cols for shock index and P/F)
-        value=temp(ii,:);%records all values in this timestep
+        %CHARTEVENTS and LAB VALUES：本 4h 槽内的多个原始观测取均值（若仅 1 条则直接写入）
+        value=temp(ii,:);
                 
         if sum(ii)==1   %if only 1 row of values at this timestep
           reformat2(irow,12:78)=value(:,4:end);
@@ -491,36 +529,35 @@ for i=1:npt
             %----start---t0----t1---end----
 
         
-        %MV
+        %MV：连续/事件与 t0/t1 的区间相交（4 情形），提取本槽剂量
         v=(endv>=t0&endv<=t1)|(startv>=t0&endv<=t1)|(startv>=t0&startv<=t1)|(startv<=t0&endv>=t1);
         %CV
         v2=vaso2(vaso2(:,3)>=t0&vaso2(:,3)<=t1,4);
         v1=nanmedian([ratev(v); v2]);
         v2=nanmax([ratev(v); v2]);
         if ~isempty(v1)&~isnan(v1)&~isempty(v2)&~isnan(v2)
-        reformat2(irow,79)=v1;    %median of dose of VP
-        reformat2(irow,80)=v2;    %max dose of VP
+        reformat2(irow,79)=v1;    % 升压药中位剂量（本槽）
+        reformat2(irow,80)=v2;    % 升压药最大剂量（本槽）
         end
         
-        %INPUT FLUID
-        %input from MV (4 ways to compute)
+        %INPUT FLUID：MV 连续（4 种覆盖情形）+ MV/CV 推注 → 槽内量与累计量
         infu=  nansum(rate.*(endt-startt).*(endt<=t1&startt>=t0)/3600   +    rate.*(endt-t0).*(startt<=t0&endt<=t1&endt>=t0)/3600 +     rate.*(t1-startt).*(startt>=t0&endt>=t1&startt<=t1)/3600 +      rate.*(t1-t0).*(endt>=t1&startt<=t0)   /3600);
         %all boluses received during this timestep, from inputMV (need to check rate is NaN) and inputCV (simpler):
         bolus=nansum(input(isnan(input(:,6))& input(:,2)>=t0&input(:,2)<=t1,7)) + nansum(input2(input2(:,2)>=t0&input2(:,2)<=t1,5));  
  
         %sum fluid given
         totvol=nansum([totvol,infu,bolus]);
-        reformat2(irow,81)=totvol;    %total fluid given
-        reformat2(irow,82)=nansum([infu,bolus]);   %fluid given at this step
+        reformat2(irow,81)=totvol;           % input_total（累计）
+        reformat2(irow,82)=nansum([infu,bolus]);   % input_4hourly（本槽）
         
-        %UO
+        %UO：4h 槽内尿量与累计尿量
         UOnow=nansum(output(output(:,2)>=t0&output(:,2)<=t1,4));  
         UOtot=nansum([UOtot UOnow]);
-        reformat2(irow,83)=UOtot;    %total UO
-        reformat2(irow,84)=nansum(UOnow);   %UO at this step
+        reformat2(irow,83)=UOtot;           % output_total（累计）
+        reformat2(irow,84)=nansum(UOnow);   % output_4hourly（本槽）
 
-        %CUMULATED BALANCE
-        reformat2(irow,85)=totvol-UOtot;    %cumulated balance
+        %CUMULATED BALANCE：累计入量 - 累计尿量
+        reformat2(irow,85)=totvol-UOtot;    % cumulated balance
 
         irow=irow+1;
         end
@@ -528,12 +565,12 @@ for i=1:npt
 end
 toc
 
-reformat2(irow:end,:)=[];
+reformat2(irow:end,:)=[];  % 裁掉未使用的预分配行
 close(h);
 
 
 tic
-     save('./BACKUP MIT PC/Data_110219.mat', '-v7.3');
+     save('./BACKUP/dataset_after_combination.mat', '-v7.3');
 toc
 
 disp('DATA COMBINATION END');
@@ -543,6 +580,8 @@ disp('DATA COMBINATION END');
 % ########################################################################
 
 disp('TABLE REDUCTION START');
+% 说明：拼装列名，构建宽表为 table，并裁剪为策略学习所需的变量子集（见 dataheaders5）。
+
 
 dataheaders=[sample_and_hold(1,:) {'Shock_Index' 'PaO2_FiO2'}]; 
 dataheaders=regexprep(dataheaders,'['']','');
@@ -553,6 +592,7 @@ reformat2t=array2table(reformat2);
 reformat2t.Properties.VariableNames=dataheaders;
 
 % headers I want to keep
+% 保留列
 dataheaders5 = {'bloc','icustayid','charttime','gender','age','elixhauser','re_admission', 'died_in_hosp', 'died_within_48h_of_out_time','mortality_90d','delay_end_of_record_and_discharge_or_death','SOFA','SIRS',...
     'Weight_kg','GCS','HR','SysBP','MeanBP','DiaBP','RR','SpO2','Temp_C','FiO2_1','Potassium','Sodium','Chloride','Glucose',...
     'BUN','Creatinine','Magnesium','Calcium','Ionised_Ca','CO2_mEqL','SGOT','SGPT','Total_bili','Albumin','Hb','WBC_count','Platelets_count','PTT','PT','INR',...
@@ -568,6 +608,9 @@ disp('TABLE REDUCTION END');
 %% SOME DATA MANIP BEFORE IMPUTATION
 
 disp('PRE-IMPUTATION ADJUSTMENTS START');
+% 说明：规范布尔/人口学变量；将升压药剂量缺失置零；评估缺失率；
+%       为 kNN 插补预留 Shock_Index / PaO2_FiO2 占位。
+% 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 % CORRECT GENDER
 reformat3t.gender=reformat3t.gender-1; 
@@ -608,6 +651,7 @@ disp('PRE-IMPUTATION ADJUSTMENTS END');
 % ########################################################################
 
 disp('MISSING VALUE IMPUTATION START');
+% 说明：先对缺失率 <5% 的列做线性插值（fixgaps），其余按 10K 行块做 kNN（seuclidean 距离）。
 
 % Do linear interpol where missingness is low (kNN imputation doesnt work if all rows have missing values)
 reformat3=table2array(reformat3t);
@@ -650,6 +694,7 @@ disp('MISSING VALUE IMPUTATION END');
 %        COMPUTE SOME DERIVED VARIABLES: P/F, Shock Index, SOFA, SIRS...
 % ########################################################################
 disp('DERIVED VARIABLE COMPUTATION START');
+% 说明：计算 P/F、Shock Index（含极端值处理），并基于阈值规则计算 SOFA/SIRS。
 
 
 % re-compute P/F with no missing values...
@@ -741,8 +786,8 @@ disp('DERIVED VARIABLE COMPUTATION END');
 % ########################################################################
 
 disp('FINAL TABLE CREATION START');
+% 说明：生成最终的 MIMICtable，并持久化为 .mat（-v7.3 以支持大体量）。
 MIMICtable = reformat4t;
 % 保存MIMICtable，下次使用就可以直接load
-save('./BACKUP MIT PC/MIMICtable.mat', 'MIMICtable', '-v7.3');
+save('./BACKUP/MIMICtable.mat', 'MIMICtable', '-v7.3');
 disp('FINAL TABLE CREATION END');
-
