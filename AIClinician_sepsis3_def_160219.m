@@ -28,6 +28,22 @@
 % reference_matrices.mat 里面包含了 Reflabs(35x11), Refvitals(28x10), sample_and_hold(2x65) 三个表
 load('reference_matrices.mat', 'Reflabs', 'Refvitals', 'sample_and_hold');
 
+v = ver;                          % 获取当前已安装的工具箱信息
+installed = {v.Name};             % 提取名称列表
+requiredToolboxes = { ...
+    'Statistics and Machine Learning Toolbox', ...
+    'Bioinformatics Toolbox' ...
+};
+
+for i = 1:numel(requiredToolboxes)
+    if ~ismember(requiredToolboxes{i}, installed)
+        error(['❌ Missing required toolbox: "', requiredToolboxes{i}, ...
+               '". Please install it via Add-On Explorer before running this script.']);
+    end
+end
+
+disp('✅ All required toolboxes are installed. Proceeding...');
+
 %% IMPORT ALL DATA
 disp('IMPORT ALL DATA START')
 % 计时器启动

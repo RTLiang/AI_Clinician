@@ -407,7 +407,7 @@ disp('DATA COMBINATION START');
 % 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。
 
 tic
-     save('./BACKUP/dataset_before_combination', '-v7.3');
+     save('./BACKUP/dataset_before_combination.mat', '-v7.3');
 toc
 
 
