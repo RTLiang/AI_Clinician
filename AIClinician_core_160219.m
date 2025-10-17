@@ -684,7 +684,7 @@ updateTrainingStatus(trainingUI, 'Training completed. Running post-processing...
 recqvi(modl:end,:)=[];
 
 tic
-     save('.\BACKUP\Data_160219.mat', '-v7.3');
+     save('./BACKUP/Data_160219.mat', '-v7.3');
 toc
 
 
@@ -1371,6 +1371,13 @@ for i=1:5
 [min(reformat5(io==i,iol)) median(reformat5(io==i,iol)) max(reformat5(io==i,iol))]
 end
 
+% Final workspace snapshot for reproducibility
+try
+    saveFullWorkspaceSnapshot(core_dir, 'final');
+catch ME
+    warning('AIClinician:WorkspaceFinalSaveFailed','Final workspace save failed: %s', ME.message);
+end
+
 % Ensure parallel pool is closed when the script ends normally
 poolobj = gcp('nocreate');
 if ~isempty(poolobj)
@@ -1649,6 +1656,36 @@ checkpointData = struct('savedAt', datestr(now), ...
     'idxs', idxs, 'allpols', {allpols}, 'polkeep', polkeep, ...
     'elapsedSeconds', elapsedSeconds, 'totalIterations', totalIter);
 save(savedPath,'checkpointData','-v7.3');
+
+% Also capture a full workspace snapshot alongside checkpoints
+try
+    label = sprintf('iter%03d', max(currentIter,0));
+    saveFullWorkspaceSnapshot(folder, label);
+catch ME
+    warning('AIClinician:WorkspaceSaveFailed','Workspace snapshot failed: %s', ME.message);
+end
+end
+
+function [workspacePath, rngPath] = saveFullWorkspaceSnapshot(baseFolder, label)
+%SAVEFULLWORKSPACESNAPSHOT Save all base-workspace variables and RNG state.
+if nargin < 1 || isempty(baseFolder)
+    baseFolder = pwd;
+end
+if nargin < 2 || isempty(label)
+    label = 'snapshot';
+end
+timestamp = datestr(now,'yyyymmdd_HHMMSS');
+snapDir = fullfile(baseFolder, 'artifacts', 'snapshots');
+if ~exist(snapDir,'dir')
+    mkdir(snapDir);
+end
+workspacePath = fullfile(snapDir, sprintf('workspace_%s_%s.mat', label, timestamp));
+rngPath = fullfile(snapDir, sprintf('rng_%s_%s.mat', label, timestamp));
+rngstate = rng; %#ok<NASGU>
+save(rngPath,'rngstate');
+% Save all variables from the base workspace
+cmd = ['save(''', workspacePath, ''',''-v7.3'');'];
+evalin('base', cmd);
 end
 
 function onStart(src,~)
