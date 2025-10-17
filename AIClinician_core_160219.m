@@ -1431,20 +1431,56 @@ else
     end
     fullPath = fullfile(folderName,fileName);
 end
+% Introspect MAT-file contents first to avoid spurious warnings
 try
-    loaded = load(fullPath,'checkpointData');
+    fileVars = whos('-file', fullPath);
 catch loadErr
-    warning('AIClinician:CheckpointLoad','Failed to load checkpoint: %s', loadErr.message);
+    warning('AIClinician:CheckpointLoad','Failed to read checkpoint variables: %s', loadErr.message);
     updateTrainingStatus(trainingUI, 'Checkpoint load failed. Starting fresh.');
     return;
 end
-if ~isstruct(loaded) || ~isfield(loaded,'checkpointData') || ~isstruct(loaded.checkpointData)
-    warning('AIClinician:CheckpointFormat','Selected file does not contain checkpointData struct.');
+varNames = {fileVars.name};
+
+% Preferred format: struct variable named 'checkpointData'
+if any(strcmp(varNames, 'checkpointData'))
+    S = load(fullPath, 'checkpointData');
+    resumeInfo = S.checkpointData;
+    resumeInfo.file = fullPath;
+% Backward-compatibility: alternate struct names
+elseif any(strcmp(varNames, 'resumeInfo')) || any(strcmp(varNames, 'checkpoint'))
+    altName = 'resumeInfo';
+    if ~any(strcmp(varNames, altName))
+        altName = 'checkpoint';
+    end
+    S = load(fullPath, altName);
+    candidate = S.(altName);
+    if isstruct(candidate)
+        resumeInfo = candidate;
+        resumeInfo.file = fullPath;
+    else
+        warning('AIClinician:CheckpointFormat','Alternate checkpoint variable ''%s'' is not a struct.', altName);
+        updateTrainingStatus(trainingUI, 'Invalid checkpoint file. Starting fresh.');
+        return;
+    end
+% Fallback: files that saved individual fields (legacy format)
+elseif all(ismember({'recqvi','OA','idxs','allpols'}, varNames))
+    fldToLoad = intersect(varNames, {'recqvi','OA','idxs','allpols','polkeep','elapsedSeconds','currentIteration','totalIterations'});
+    S = load(fullPath, fldToLoad{:});
+    resumeInfo = struct();
+    if isfield(S,'recqvi'), resumeInfo.recqvi = S.recqvi; end
+    if isfield(S,'OA'), resumeInfo.OA = S.OA; end
+    if isfield(S,'idxs'), resumeInfo.idxs = S.idxs; end
+    if isfield(S,'allpols'), resumeInfo.allpols = S.allpols; end
+    if isfield(S,'polkeep'), resumeInfo.polkeep = S.polkeep; end
+    if isfield(S,'elapsedSeconds'), resumeInfo.elapsedSeconds = S.elapsedSeconds; end
+    if isfield(S,'currentIteration'), resumeInfo.currentIteration = S.currentIteration; end
+    if isfield(S,'totalIterations'), resumeInfo.totalIterations = S.totalIterations; end
+    resumeInfo.file = fullPath;
+else
+    warning('AIClinician:CheckpointFormat','Selected file does not contain a recognizable checkpoint structure.');
     updateTrainingStatus(trainingUI, 'Invalid checkpoint file. Starting fresh.');
     return;
 end
-resumeInfo = loaded.checkpointData;
-resumeInfo.file = fullPath;
 if ~isfield(resumeInfo,'currentIteration') || ~isnumeric(resumeInfo.currentIteration)
     resumeInfo.currentIteration = 0;
 end
