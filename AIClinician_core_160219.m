@@ -66,19 +66,37 @@ disp('####  INITIALISATION  ####')
 trainingUI = setupTrainingUI();
 checkpointPath = fullfile(core_dir, 'AIClinician_core_checkpoint.mat');
 
-nr_reps=500;               % nr of repetitions (total nr models)
+nr_reps=500;               % 迭代次数  nr of repetitions (total nr models)
 nclustering=32;            % how many times we do clustering (best solution will be chosen)
-prop=0.25;                 % proportion of the data we sample for clustering
-gamma=0.99;                % gamma
-transthres=5;              % threshold for pruning the transition matrix
-polkeep=1;                 % count of saved policies
+% 表示用不同随机初始质心把 k-means 重复跑 32 次，每次都会收敛到某个（可能不同的）局部最优。最终返回“簇内平方和最小”的那一次作为结果。
+prop=0.25;                 % 抽样多少做 k-means 聚类 proportion of the data we sample for clustering 
+gamma=0.99;                % MDP 折扣因子 discount factor gamma
+transthres=5;              % threshold for pruning the transition matrix 丢弃出现次数少于 5 次的状态-动作转移
+polkeep=1;                 % count of saved policies 每保存一个合格模型就递增，确保后续恢复时索引正确
 ncl=750;                   % nr of states
-nra=5;                     % nr of actions (2 to 10)
-ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test)
-OA=NaN(752,nr_reps);       % record of optimal actions
-recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model)
-allpols=cell(nr_reps,15);  % saving best candidate models
+nra=5;                     % VP 和 IV 分别离散化等级，总共 nra^2 种联合动作空间 nr of actions (2 to 10)
+ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test) 控制每轮随机交叉验证拆分的折数，这里固定为 5 折（每次 80% 训练、20% 测试）。
+OA=NaN(752,nr_reps);       % 记录每次模型中各状态的最优动作 record of optimal actions
+recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model) 按模型积累训练/验证/eICU 的 WIS、QL 等关键指标，后续用来筛选表现最佳的候选模型
+allpols=cell(nr_reps,15);  % saving best candidate models 缓存通过阈值的模型及其关键对象（Q 表、转移矩阵、聚类中心等），供最终挑选和复现最佳策略时加载
 
+
+
+% % Resume/Checkpoint handling for interactive training UI
+% Purpose:
+% - 支持长时间训练的断点续跑：若存在检查点(checkpoint)，恢复上次的迭代进度、
+% 中间结果及 UI 状态；否则初始化为全新训练。
+% What it restores when a checkpoint is found:
+% - recqvi, OA, allpols, polkeep, idxs 等中间产物（若存在相应字段）
+% - startIter：将 resumeInfo.currentIteration 裁剪到 [0, nr_reps] 用作恢复的起始迭代
+% - checkpointPath：若 resumeInfo.file 指向了保存目录，则将后续保存路径重定向到该目录
+% - 交互界面状态：恢复已用时 elapsedSeconds，清空计时器句柄，标记未运行/未停止
+% UI feedback:
+% - 找到检查点：在界面上显示 “Loaded checkpoint (startIter/nr_reps). Press Start to resume.”
+% - 未找到检查点：显示 “Ready. Press Start to begin training.”
+% Notes:
+% - 具体训练开始/继续由 UI 触发，后续在主循环前通过 uiEnsureRunning/uiProcessRequests 协调
+% - 该逻辑只做状态与路径恢复，不执行训练计算
 startIter = 0;
 resumeIdxs = [];
 resumeInfo = maybeLoadCheckpoint(trainingUI, checkpointPath, nr_reps);
@@ -111,14 +129,16 @@ end
 % #################   Convert training data and compute conversion factors    ######################
 
 % all 47 columns of interest
-colbin = {'gender','mechvent','max_dose_vaso','re_admission'};
+colbin = {'gender','mechvent','max_dose_vaso','re_admission'};% 二值表示
 colnorm={'age','Weight_kg','GCS','HR','SysBP','MeanBP','DiaBP','RR','Temp_C','FiO2_1',...
     'Potassium','Sodium','Chloride','Glucose','Magnesium','Calcium',...
     'Hb','WBC_count','Platelets_count','PTT','PT','Arterial_pH','paO2','paCO2',...
-    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'};
-collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'};
+    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'}; % 连续变量
+collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'}; % 偏态分布，先做 log(0.1+x) 再 z-score
 
-colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin));colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm));collog=find(ismember(MIMICtable.Properties.VariableNames,collog));
+colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin));
+colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm));
+collog=find(ismember(MIMICtable.Properties.VariableNames,collog));
 
 % find patients who died in ICU during data collection period
 % ii=MIMICtable.bloc==1&MIMICtable.died_within_48h_of_out_time==1& MIMICtable.delay_end_of_record_and_discharge_or_death<24;
