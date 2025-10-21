@@ -44,7 +44,7 @@ end
 
 disp('✅ All required toolboxes are installed. Proceeding...');
 
-%% IMPORT ALL DATA
+%% IMPORT ALL DATA 逐个读取csv中的文件，载入内存
 disp('IMPORT ALL DATA START')
 % 计时器启动
 tic
@@ -107,7 +107,7 @@ MV=table2array(readtable('./exportdir/mechvent.csv'));
 toc
 disp('IMPORT ALL DATA END')
 
-%%                       INITIAL DATA MANIPULATIONS
+%%INITIAL DATA MANIPULATIONS 简单清洗
 
 disp('INITIAL DATA MANIPULATIONS START')
 % 将 microbio 表中缺失的 charttime 用 chartdate 填补后，删除原 chartdate 列，
@@ -755,6 +755,15 @@ disp('SAMPLE AND HOLD ON RAW DATA START')
 reformat=SAH(reformat(:,1:68),sample_and_hold);
 disp('SAMPLE AND HOLD ON RAW DATA END')
 
+% reformat：导入数据。后面 65 列分别放生命体征、化验、通气标志。之后对这一矩阵做异常值截断、互补换算等清洗。
+% reformatsah：传给 SAH.m，按变量对应的“保持时间”做 sample-and-hold 向前填充的结果
+% reformat2：重新按 4 小时时间槽聚合，生成的 84 列矩阵中，列 1-3 是时间槽元数据，列 4-84 是人口学和聚合后的特征。
+% reformat2t → reformat3t：先把 reformat2 转成表对象并加上列名，然后根据缺失率剔除缺失超过 70% 的特征列，得到 reformat3t，
+%                          仍保留前 11 列元数据和后面的关键派生列。
+% reformat4t / reformat4：reformat3t 在进行 kNN/线性插补、单位标准化、派生 P/F 比、Shock Index、SOFA/SIRS 等指标后，
+%                          拷贝为 reformat4t（表格）和 reformat4（数值矩阵）。这一步还包含对极端入量/尿量的住院级剔除及若干筛查，最终的 reformat4t 就是写入 .mat 的 Sepsis 队列表。
+
+
 
 %% ########################################################################
 %                             DATA COMBINATION
@@ -784,6 +793,13 @@ icustayidlist = unique(reformat(:,2));  % 需要处理的 ICU stay 内部索引�
 %  82     = 本槽入量（4 小时内给入量）
 %  83     = 累计尿量（total UO, 截至当前槽）
 %  84     = 本槽尿量（4 小时尿量）
+% 
+% bloc | icustayid | charttime           | HR | MeanBP | FiO2_1 | PaO2 | input_4hourly | output_4hourly | ...
+-----+-----------+---------------------+----+--------+--------+------+---------------+----------------+------
+1    |     34567 | 2121-05-10 08:00:00 | 95 |     72 |  0.30  |  85  |      550      |       80       | ...
+2    |     34567 | 2121-05-10 12:00:00 | 88 |     70 |  0.40  |  92  |      300      |      120       | ...
+3    |     34567 | 2121-05-10 16:00:00 | 92 |     68 |  0.45  |  78  |      260      |      100       | ...
+
 reformat2 = nan(size(reformat,1), 84);  % output array
 
 h = waitbar(0,'Initializing waitbar...');  % 进度条
@@ -1004,7 +1020,7 @@ end
 
 reformat3t(:,11:mechventcol-1)=array2table(reformat3(:,11:mechventcol-1));
 
-% KNN IMPUTATION -  Done on chunks of 10K records.
+% KNN IMPUTATION -   每1万行切分成块来挨个处理，剩余仍然缺失的变量使用KNN
 
 mechventcol=find(ismember(reformat3t.Properties.VariableNames,{'mechvent'}));
 ref=reformat3(:,11:mechventcol-1);  %columns of interest
@@ -1041,7 +1057,7 @@ reformat4t.gender=reformat4t.gender-1;
 ii=reformat4t.age>150*365.25;              % 以天为单位，150y 以上视为异常
 reformat4t.age(ii)=91.4*365.25;            % 91.4y 的匿名上限
 
-% 3) 机械通气列：NaN→0，>0→1（二值指示）
+% 3) 机械通气列：NaN→0，>0→1（二值指示），是否进行了机械通气
 reformat4t.mechvent(isnan(reformat4t.mechvent))=0;
 reformat4t.mechvent(reformat4t.mechvent>0)=1;
 
@@ -1198,6 +1214,7 @@ disp('EXCLUSION OF SOME PATIENTS END')
 %% #######################################################################
 %                       CREATE SEPSIS COHORT
 % ########################################################################
+% 先进行了初筛以减少数量，后所有特征填补完毕精确筛选脓毒症队列
 disp('CREATE SEPSIS COHORT START')
 % 本节：基于已计算的逐时刻 SOFA/SIRS，从每次 ICU 住院提取一行摘要，
 % 并以 “监测窗内 max SOFA >= 2” 作为 Sepsis-3 的筛选条件构建脓毒症队列。
