@@ -63,87 +63,64 @@ load("./BACKUP/MIMICtable.mat")
 load("./exportdir/eicu/eICUtable_ready.mat")
 disp('####  INITIALISATION  ####') 
 
-trainingUI = setupTrainingUI();
-checkpointPath = fullfile(core_dir, 'AIClinician_core_checkpoint.mat');
 
-nr_reps=500;               % nr of repetitions (total nr models)
+nr_reps=2;               % 迭代次数  nr of repetitions (total nr models)
 nclustering=32;            % how many times we do clustering (best solution will be chosen)
-prop=0.25;                 % proportion of the data we sample for clustering
-gamma=0.99;                % gamma
-transthres=5;              % threshold for pruning the transition matrix
-polkeep=1;                 % count of saved policies
+% 表示用不同随机初始质心把 k-means 重复跑 32 次，每次都会收敛到某个（可能不同的）局部最优。最终返回“簇内平方和最小”的那一次作为结果。
+prop=0.25;                 % 抽样多少做 k-means 聚类 proportion of the data we sample for clustering 
+gamma=0.99;                % MDP 折扣因子 discount factor gamma
+transthres=5;              % threshold for pruning the transition matrix 丢弃出现次数少于 5 次的状态-动作转移
+polkeep=1;                 % count of saved policies 每保存一个合格模型就递增，确保后续恢复时索引正确
 ncl=750;                   % nr of states
-nra=5;                     % nr of actions (2 to 10)
-ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test)
-OA=NaN(752,nr_reps);       % record of optimal actions
-recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model)
-allpols=cell(nr_reps,15);  % saving best candidate models
+nra=5;                     % VP 和 IV 分别离散化等级，总共 nra^2 种联合动作空间 nr of actions (2 to 10)
+ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test) 控制每轮随机交叉验证拆分的折数，这里固定为 5 折（每次 80% 训练、20% 测试）。
+OA=NaN(752,nr_reps);       % 记录每次模型中各状态的最优动作 record of optimal actions
+recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model) 按模型积累训练/验证/eICU 的 WIS、QL 等关键指标，后续用来筛选表现最佳的候选模型
+allpols=cell(nr_reps,15);  % saving best candidate models 缓存通过阈值的模型及其关键对象（Q 表、转移矩阵、聚类中心等），供最终挑选和复现最佳策略时加载
 
-startIter = 0;
-resumeIdxs = [];
-resumeInfo = maybeLoadCheckpoint(trainingUI, checkpointPath, nr_reps);
-if ~isempty(resumeInfo)
-    if isfield(resumeInfo,'recqvi'), recqvi = resumeInfo.recqvi; end
-    if isfield(resumeInfo,'OA'), OA = resumeInfo.OA; end
-    if isfield(resumeInfo,'allpols'), allpols = resumeInfo.allpols; end
-    if isfield(resumeInfo,'polkeep'), polkeep = resumeInfo.polkeep; end
-    if isfield(resumeInfo,'idxs'), resumeIdxs = resumeInfo.idxs; end
-    startIter = max(0, resumeInfo.currentIteration);
-    startIter = min(startIter, nr_reps);
-    if isfield(resumeInfo,'file')
-        [resumeDir,~,~] = fileparts(resumeInfo.file);
-        if ~isempty(resumeDir)
-            checkpointPath = fullfile(resumeDir, 'AIClinician_core_checkpoint.mat');
-        end
-    end
-    state = coreGetState(trainingUI.figure);
-    state.elapsedSeconds = resumeInfo.elapsedSeconds;
-    state.timerHandle = [];
-    state.isRunning = false;
-    state.shouldStop = false;
-    coreSetState(trainingUI.figure,state);
-    updateTrainingStatus(trainingUI, sprintf('Loaded checkpoint (%d/%d). Press Start to resume.', startIter, nr_reps));
-else
-    updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
-end
+
+
 
 
 % #################   Convert training data and compute conversion factors    ######################
 
 % all 47 columns of interest
-colbin = {'gender','mechvent','max_dose_vaso','re_admission'};
+colbin = {'gender','mechvent','max_dose_vaso','re_admission'};% 二值表示
 colnorm={'age','Weight_kg','GCS','HR','SysBP','MeanBP','DiaBP','RR','Temp_C','FiO2_1',...
     'Potassium','Sodium','Chloride','Glucose','Magnesium','Calcium',...
     'Hb','WBC_count','Platelets_count','PTT','PT','Arterial_pH','paO2','paCO2',...
-    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'};
-collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'};
+    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'}; % 连续变量
+collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'}; % 偏态分布，先做 log(0.1+x) 再 z-score
+% Q：为什么这些变量要做这些变换？做log和直接变换的区别是什么？为什么要log？
 
-colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin));colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm));collog=find(ismember(MIMICtable.Properties.VariableNames,collog));
+colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin)); % 将列名转换为索引下标
+colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm)); % 将列名转换为索引下标
+collog=find(ismember(MIMICtable.Properties.VariableNames,collog)); % 将列名转换为索引下标
 
 % find patients who died in ICU during data collection period
+% 可选项：剔除在 ICU 期间死亡且记录不足 24 小时的病人，让 reformat5 保留或过滤这些行。
+
 % ii=MIMICtable.bloc==1&MIMICtable.died_within_48h_of_out_time==1& MIMICtable.delay_end_of_record_and_discharge_or_death<24;
 % icustayidlist=MIMICtable.icustayid;
 % ikeep=~ismember(icustayidlist,MIMICtable.icustayid(ii));
 reformat5=table2array(MIMICtable);
 % reformat5=reformat5(ikeep,:);
 icustayidlist=MIMICtable.icustayid;
-icuuniqueids=unique(icustayidlist); %list of unique icustayids from MIMIC
-idxs=NaN(size(icustayidlist,1),nr_reps); %record state membership test cohort
-if exist('resumeIdxs','var') && ~isempty(resumeIdxs)
-    try
-        idxs = resumeIdxs;
-    catch
-        warning('AIClinician:ResumeIdxsSize','Saved idxs size mismatch; continuing with fresh idxs array.');
-    end
-end
+icuuniqueids=unique(icustayidlist); %list of unique icustayids from MIMIC 799557
+idxs=NaN(size(icustayidlist,1),nr_reps); %record state membership test cohort 每次模型迭代后记录 MIMIC 测试集中每条记录被分到的聚类状态，共 size(icustayidlist) 行，nr_reps列
 
 MIMICraw=MIMICtable(:, [colbin colnorm collog]);
 MIMICraw=table2array(MIMICraw);  % RAW values
 MIMICzs=[reformat5(:, colbin)-0.5 zscore(reformat5(:,colnorm)) zscore(log(0.1+reformat5(:, collog)))];  
-MIMICzs(:,[4])=log(MIMICzs(:,[ 4])+.6);   % MAX DOSE NORAD 
-MIMICzs(:,45)=2.*MIMICzs(:,45);   % increase weight of this variable
+%创建归一化后的训练特征矩阵：
+% reformat5(:, colbin)-0.5：二值特征从 {0,1} 平移到 {−0.5,+0.5}。
+% zscore(reformat5(:, colnorm))：连续变量做标准化。
+% zscore(log(0.1 + reformat5(:, collog)))：对偏态变量先做 log(0.1 + x) 再标准化。
+MIMICzs(:,[4])=log(MIMICzs(:,[ 4])+.6);   % 第 4 列（max_dose_vaso）再取一次对数，强调高剂量差异。 MAX DOSE NORAD 
+MIMICzs(:,45)=2.*MIMICzs(:,45);   % 第 45 列的权重放大一倍（input_4hourly），在后续聚类与状态划分中提高其影响力。 increase weight of this variable
 
-% name of cols in eICU test set
+% name of cols in eICU test set 
+% eICU 做相同的变换
 coltbin={'gender', 'mechvent','max_dose_vaso','re_admission'}; 
 coltnorm={'age','admissionweight','gcs','hr','sysbp','meanbp','diabp','rr','temp_c','fio2both',...
     'potassium','sodium','chloride','glucose','magnesium','calcium',...
@@ -151,88 +128,82 @@ coltnorm={'age','admissionweight','gcs','hr','sysbp','meanbp','diabp','rr','temp
     'arterial_be','hco3','arterial_lactate','sofa','sirs','shock_index','pao2_fio2','cumulated_balance_tev'};
 coltlog={'spo2','bun','creatinine','sgot','sgpt','total_bili','inr','input_total_tev','input_4hourly_tev','output_total','output_4hourly'};
 
-coltbin=find(ismember(eICUtable.Properties.VariableNames,coltbin));coltnorm=find(ismember(eICUtable.Properties.VariableNames,coltnorm));coltlog=find(ismember(eICUtable.Properties.VariableNames,coltlog));
+coltbin=find(ismember(eICUtable.Properties.VariableNames,coltbin)); 
+coltnorm=find(ismember(eICUtable.Properties.VariableNames,coltnorm)); 
+coltlog=find(ismember(eICUtable.Properties.VariableNames,coltlog));
 
-
-%  eICU 的原始表 eICUtable 按训练所需的 47 列挑选并对齐后的“测试特征表”
 Xtest=eICUtable(:, [coltbin coltnorm coltlog]);
 
 % shuffle columns so test match train
+% 手动对齐 MIMIC 的变量顺序
 Xtest = Xtest(:,[1:43 45:47 44]);Xtest = Xtest(:,[1:43 45 44 46:end]);Xtest = Xtest(:,[1:39 41:42 40 43:end]);Xtest = Xtest(:,[1:32 34 33 35:end]);
 Xtest = Xtest(:,[1:13 15:32 14 33:end]);Xtest = Xtest(:,[1:13 31 14:30 32:end]);Xtest = Xtest(:,[1:14 16 15 17:end]);Xtest = Xtest(:,[1:10 12 11 13:end]);
 Xtest = Xtest(:,[1:8 10:12 9 13:end]);Xtest = Xtest(:,[1 4 2:3 5:end]);Xtest = Xtest(:,[1:29 31 30 32:end]);Xtest = Xtest(:,[1:32 34 33 35:end]);
 Xtest = Xtest(:,[1:44 46 45 end]);Xtest = Xtest(:,[1:43 45:46 44 end]);
 
 eICUraw=table2array(Xtest);
-eICUraw(isnan(eICUraw(:,45)),45)=0;  %replace NAN fluid with 0
+eICUraw(isnan(eICUraw(:,45)),45)=0;  % 把第 45 列的 NAN 换成 0 replace NAN fluid with 0
     
 % compute conversion factors using MIMIC data
+% 计算“特征变换的参数”，后面拿 eICU 数据时直接套用这些参数做同样的变换，实现训练/测试的尺度对齐。
+% a/b/c/d 本身之后没有再用
 a=MIMICraw(:, 1:3)-0.5; 
 [b]= log(MIMICraw(:, 4)+0.1);
 [c,cmu,csigma]=zscore(MIMICraw(:,5:36));
 [d,dmu,dsigma]=zscore(log(0.1+MIMICraw(:,37:47)));
 
 % ZSCORE full at once XTEST using the factors from training data
+% 使用前面计算 *mu/*sigma 参数对 eICU 数据集进行归一化
 eICUzs=eICUraw;
 eICUzs(:,1:3)=eICUzs(:,1:3)-0.5;
 eICUzs(:,4)=log(eICUzs(:,4)+0.1);
 eICUzs(:,5:36)=(eICUzs(:,5:36)-cmu)./csigma;
+eICUzs(:,37:47)=(log(0.1+eICUzs(:,37:47))-dmu)./dsigma;
 
-logcols = 0.1 + eICUraw(:,37:47);
-logcols(logcols<=0) = NaN;
-logcols = log(logcols);
-eICUzs(:,37:47) = (logcols - dmu)./dsigma;
+% Guard against missing vasopressor or fluid doses before continuing
+% 如果 eICU 的关键剂量列（血管加压素 eICUraw(:,4)、4 小时液体量 `eICUraw(:,45)）仍有 NaN，就打印提示并中止脚本，避免后续聚类/剂量离散化依赖的核心字段缺失导致错误。
+hasMissingVaso = any(isnan(eICUraw(:,4)));
+hasMissingFluids = any(isnan(eICUraw(:,45)));
 
-% Ensure the array passed to knnsearch is numeric, finite, and real
-eICUzs = double(eICUzs);
-bad = ~isfinite(eICUzs);
-eICUzs(bad) = 0;
-if ~isreal(eICUzs)
-    eICUzs = real(eICUzs);
-end
-
-if sum(isnan(eICUraw(:,4))) >0 || sum(isnan(eICUraw(:,45)))>0;  disp('NaNs in Xtest / drug doses'); disp('EXECUTION STOPPED'); return;end
-p=gcp('nocreate'); if isempty(p) ; pool = parpool; end ; mdp_verbose
-stream = RandStream('mlfg6331_64'); options = statset('UseParallel',1,'UseSubstreams',1,'Streams',stream); warning('off','all')
-
-
-if ~uiEnsureRunning(trainingUI, startIter, nr_reps, checkpointPath, recqvi, OA, idxs, allpols, polkeep)
-    updateTrainingStatus(trainingUI, 'Training stopped before start.');
+if hasMissingVaso || hasMissingFluids
+    disp('NaNs in Xtest / drug doses');
+    disp('EXECUTION STOPPED');
     return;
 end
 
-trainingCanceled = false;
-
-if startIter >= nr_reps
-    modl = startIter;
-    updateTrainingStatus(trainingUI, 'Checkpoint already completed all models. Running post-processing...');
+% Initialise or reuse the parallel pool and enable verbose MDP logging
+p = gcp('nocreate');
+if isempty(p)
+    pool = parpool;
 else
+    pool = p;
+end
+mdp_verbose
 
- for modl=startIter+1:nr_reps  % MAIN LOOP OVER ALL MODELS
-  
-  updateTrainingStatus(trainingUI, sprintf('Running model %d/%d...', modl, nr_reps));
-  drawnow limitrate;
-  if ~uiProcessRequests(trainingUI, checkpointPath, modl-1, nr_reps, recqvi, OA, idxs, allpols, polkeep)
-      trainingCanceled = true;
-      updateTrainingStatus(trainingUI, sprintf('Training halted at model %d/%d.', modl-1, nr_reps));
-      break;
-  end
+% Configure reproducible parallel randomness and silence non-critical warnings
+stream = RandStream('mlfg6331_64'); % 生成并行子流
+options = statset('UseParallel', 1, 'UseSubstreams', 1, 'Streams', stream); % 开启并行、启用子流（每个 worker 从同一个主流派生独立子流）
+warning('off', 'all')
+
+
+for modl=1:nr_reps  % MAIN LOOP OVER ALL MODELS 
+    % modl 主循环迭代计数，范围 1:nr_reps
    
-  N=numel(icuuniqueids); %total number of rows to choose from
-  grp=floor(ncv*rand(N,1)+1);  %list of 1 to 5 (20% of the data in each grp) -- this means that train/test MIMIC split are DIFFERENT in all the 500 models
-  crossval=1;
-  trainidx=icuuniqueids(crossval~=grp);
-  testidx=icuuniqueids(crossval==grp);
-  train=ismember(icustayidlist,trainidx);
-  test=ismember(icustayidlist,testidx);
-  X=MIMICzs(train,:);
-  Xtestmimic=MIMICzs(~train,:);
-  blocs=reformat5(train,1);
-  bloctestmimic=reformat5(~train,1);
-  ptid=reformat5(train,2);
-  ptidtestmimic=reformat5(~train,2);
-  outcome=10; %   HOSP _ MORTALITY = 8 / 90d MORTA = 10
-  Y90=reformat5(train,outcome);   
+  N=numel(icuuniqueids); % total number of rows to choose from
+  grp=floor(ncv*rand(N,1)+1);  %list of 1 to 5 (20% of the data in each grp) -- this means that train/test MIMIC split are DIFFERENT in all the 500 models 交叉验证折号，随机抽取 80%/20% 作为训练/测试集
+  crossval=1; % 当前作为测试折的编号（固定为 1），其余折都归入训练集。
+  trainidx=icuuniqueids(crossval~=grp); % 被划分为训练集的 ICU 住院号集合，不属于 crossval 的 grp 集合
+  testidx=icuuniqueids(crossval==grp); % 被划分为测试集的 ICU 住院号集合，属于 crossval 的 grp 集合
+  train=ismember(icustayidlist,trainidx); % 逻辑索引，标记 icustayidlist 中哪些记录属于训练住院号。
+  test=ismember(icustayidlist,testidx); % 逻辑索引，标记哪些记录属于测试住院号。
+  X=MIMICzs(train,:); % 训练集的特征矩阵
+  Xtestmimic=MIMICzs(~train,:); % 测试集的特征矩阵
+  blocs=reformat5(train,1); % 训练记录的时间步序号，帮助重建患者轨迹
+  bloctestmimic=reformat5(~train,1); % 测试记录的时间步序号
+  ptid=reformat5(train,2); % 训练记录对应的患者 ID，用于按患者聚合
+  ptidtestmimic=reformat5(~train,2); % 测试记录对应的患者 ID
+  outcome=10; %   HOSP_MORTALITY = 8 / 90d MORTA = 10   目标列的索引，这里固定 10（90 天死亡率或住院死亡，脚本通过这个索引读取标签）。
+  Y90=reformat5(train,outcome);  % 训练集对应的标签列，在 reward 构造与评估时指示生存/死亡。
 
 fprintf('########################   MODEL NUMBER : ');       fprintf('%d \n',modl);         disp( datestr(now))
           
@@ -240,21 +211,22 @@ fprintf('########################   MODEL NUMBER : ');       fprintf('%d \n',mod
 % #######   find best clustering solution (lowest intracluster variability)  ####################
 disp('####  CLUSTERING  ####') % BY SAMPLING
 N=size(X,1); %total number of rows to choose from
-sampl=X(find(floor(rand(N,1)+prop)),:);
+sampl=X(find(floor(rand(N,1)+prop)),:); %按 prop=0.25 的概率对当前训练样本（共 N 条）做子采样，仅在 25% 的样本上运行 kmeans 以加速计算。用 floor(rand+prop) 是一个快速 Bernoulli 采样技巧。
+
 [~,C] = kmeans(sampl,ncl,'Options',options,'MaxIter',10000,...
     'Start','plus','Display','final','Replicates',nclustering);
-C = double(C);
-badC = ~isfinite(C);
-C(badC) = 0;
-if ~isreal(C)
-    C = real(C);
-end
-[idx]=knnsearch(C,X);  %N-D nearest point search: look for points closest to each centroid
+    % 在这个子集上用 k-means 聚 ncl=750 个簇，重复 nclustering=32 次，并采用 k-means++ 初始化（'Start','plus'），最后返回簇内方差最小的一组质心 C。
+[idx]=knnsearch(C,X);  %N-D nearest point search: look for points closest to each centroid 把所有训练样本（未采样的整集 X）分配到最近的质心，得到每条记录的状态编号 idx，供后续构建 MDP 转移和奖励使用。
 
 
 %  ############################# CREATE ACTIONS  ########################
+% 将静脉液体 (input_4hourly) 与升压剂 (max_dose_vaso) 的连续剂量离散成 5×5 个联合动作：
+%   1. 找到两种剂量列的索引，并提取全量 MIMIC 样本的历史给药记录；
+%   2. 对非零剂量做分位数排名后映射到 4 个非零等级，并把 0 剂量保留为等级 1；
+%   3. 组合得到 25 个 (io, vc) 等级对，为训练集中每条时间步打上动作编号 actionbloctrain；
+%   4. 统计每个等级对应的中位给药量 uniqueValuesdose，后续用于 eICU 推荐剂量、可视化与解释。
 disp('####  CREATE ACTIONS  ####') 
-nact=nra^2;
+nact=nra^2; % 状态空间 nra^2 = 25
  
 iol=find(ismember(MIMICtable.Properties.VariableNames,{'input_4hourly'}));
 vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
@@ -278,81 +250,107 @@ uniqueValuesdose=[ ma2(uniqueValues.med2)' ma1(uniqueValues.med1)'];  % median d
  
  
 % ###################################################################################################################################
+% 构造 TD/MDP 输入矩阵 qldata3：
+%   - 初始 qldata 包含原始 bloc（时间步），聚类状态 idx，离散动作 actionbloctrain，
+%     以及 0/1 死亡标签 Y90 转换出的 ±100 奖励；
+%   - 逐行复制到 qldata3，遇到 bloc==1（轨迹结束）时插入一行吸收态
+%     [下一 bloc, 终结状态, 动作0, 奖励]，并将奖励写进终结行；
+%   - 结果是一个按患者轨迹拼接的矩阵，用于后续统计转移概率和奖励。
+
 disp('####  CREATE QLDATA3  ####')
-r=[100 -100]; r2=r.*(2*(1-Y90)-1); 
+r=[100 -100]; % r = [100 -100]; 设定正负 100 的基础奖励模板（前者对应存活，后者对应死亡）。
+r2=r.*(2*(1-Y90)-1);  %将 Y90（1=死亡，0=生存）映射到 ±100：当 Y90=0 时产生 +100，Y90=1 时得到 -100。
 qldata=[blocs idx actionbloctrain Y90 r2];  % contains bloc / state / action / outcome&reward     %1 = died
-qldata3=zeros(floor(size(qldata,1)*1.2),4); 
+% 将每个时间步的时间标签 bloc、状态编号 idx、离散动作、死亡标签和奖励拼成原始轨迹表。
+qldata3=zeros(floor(size(qldata,1)*1.2),4); % 为最终轨迹矩阵预分配空间（4 列：时间、状态、动作、奖励），多留 20% 以便插入终结行。
 c=0;
-abss=[ncl+2 ncl+1]; %absorbing states numbers
+abss=[ncl+2 ncl+1]; %absorbing states numbers 定义两个吸收态 id：ncl+2 表示死亡终结态，ncl+1 表示生存终结态。
  
-        for i=1:size(qldata,1)-1
-            c=c+1;  qldata3(c,:)=qldata(i,1:4);
-            if qldata(i+1,1)==1 %end of trace for this patient
+        for i=1:size(qldata,1)-1 %遍历原始 qldata 的每一行（倒数第二行之前，便于查看下一行）。
+            c=c+1;  qldata3(c,:)=qldata(i,1:4); % 将当前行的时间步、状态、动作、死亡标签写入 qldata3。
+            if qldata(i+1,1)==1 %end of trace for this patient 检测下一行是否是下一位患者的第一个时间步（说明本轨迹结束）。
                 c=c+1;     qldata3(c,:)=[qldata(i,1)+1 abss(1+qldata(i,4)) 0 qldata(i,5)]; 
+                % 插入终结行：时间步加一、状态切换到 “存活/死亡” 吸收态（qldata(i,4) 是 0 或 1）、动作置零并写入终结奖励。
             end
         end
-        qldata3(c+1:end,:)=[];
+        qldata3(c+1:end,:)=[]; % 删除预分配中未写入的多余行，留下实际轨迹矩阵。
 
  
 % ###################################################################################################################################
+% 构建转移概率张量 T(S' | S, A)（以列存放 S'，便于按 (S,A) 归一化）
+% - transitionr(S1,S0,A) 先累计 (S0→S1 在动作 A 下) 的发生次数
+% - sums0a0(S0,A) 记录每个 (S0,A) 的总次数
+% - 之后对每个 (S0,A) 的列归一化，得到条件概率 T(S' | S0,A)
 disp('####  CREATE TRANSITION MATRIX T(S'',S,A) ####')
  
-transitionr=zeros(ncl+2,ncl+2,nact);  %this is T(S',S,A)
-sums0a0=zeros(ncl+2,nact);
+transitionr=zeros(ncl+2,ncl+2,nact);  % T(S',S,A) 维度：[S' x S x A]
+sums0a0=zeros(ncl+2,nact);            % (S,A) 计数表，用于归一化和估计行为策略
  
      for i=1:size(qldata3,1)-1
  
-         if (qldata3(i+1,1))~=1  % if we are not in the last state for this patient = if there is a transition to make!
+         % 若下一行 bloc != 1，说明轨迹未结束，存在从 S0 到 S1 的一次转移
+         if (qldata3(i+1,1))~=1
          S0=qldata3(i,2); S1=qldata3(i+1,2);  acid= qldata3(i,3);
          transitionr(S1,S0,acid)=transitionr(S1,S0,acid)+1;  sums0a0(S0,acid)=sums0a0(S0,acid)+1;
          end
      end
- 
-      sums0a0(sums0a0<=transthres)=0;  %delete rare transitions (those seen less than 5 times = bottom 50%!!)
+
+      % 稀疏裁剪：删除出现次数较少（≤ transthres）的 (S,A)，减少噪声导致的不稳定
+      sums0a0(sums0a0<=transthres)=0;
 
      for i=1:ncl+2
          for j=1:nact
              if sums0a0(i,j)==0
                 transitionr(:,i,j)=0; 
              else
+                % 对每个 (S=i, A=j) 的列进行归一化，得到 T(S' | S,A)
                 transitionr(:,i,j)=transitionr(:,i,j)/sums0a0(i,j);
              end
          end
      end
  
    
-transitionr(isnan(transitionr))=0;  %replace NANs with zeros
-transitionr(isinf(transitionr))=0;  %replace NANs with zeros
+% 数值清理，防止 NaN/Inf 进入后续计算
+transitionr(isnan(transitionr))=0;
+transitionr(isinf(transitionr))=0;
  
-physpol=sums0a0./sum(sums0a0')';    %physicians policy: what action was chosen in each state
+% 临床行为策略 π_phys(A|S)：按行归一化 (S,A) 计数，得到各状态下医生动作分布
+physpol=sums0a0./sum(sums0a0')';
  
- disp('####  CREATE TRANSITION MATRIX T(S,S'',A)  ####')
+% 备份构建另一种存储布局的转移张量 T(S' | S, A)：以行存放 S'
+% - transitionr2(S0,S1,A) 计数 (S0→S1 | A)
+% - 之后对每个 (S0,A) 的行归一化，得到 T(S' | S0,A)
+disp('####  CREATE TRANSITION MATRIX T(S,S'',A)  ####')
  
-transitionr2=zeros(ncl+2,ncl+2,nact);  % this is T(S,S',A)
-sums0a0=zeros(ncl+2,nact);
+transitionr2=zeros(ncl+2,ncl+2,nact);  % T(S,S',A) 维度：[S x S' x A]
+sums0a0=zeros(ncl+2,nact);             % 重新统计 (S,A) 计数
  
      for i=1:size(qldata3,1)-1
  
-         if (qldata3(i+1,1))~=1  % if we are not in the last state for this patient = if there is a transition to make!
+         % 同上：若轨迹未结束，记录 (S0→S1 | A) 的计数
+         if (qldata3(i+1,1))~=1
          S0=qldata3(i,2); S1=qldata3(i+1,2);  acid= qldata3(i,3);
          transitionr2(S0,S1,acid)=transitionr2(S0,S1,acid)+1;  sums0a0(S0,acid)=sums0a0(S0,acid)+1;
          end
      end
  
-      sums0a0(sums0a0<=transthres)=0;  %delete rare transitions (those seen less than 5 times = bottom 50%!!) IQR = 2-17
+      % 稀疏裁剪（同上）
+      sums0a0(sums0a0<=transthres)=0;  % IQR 范围注释仅作数据分布提示
      
      for i=1:ncl+2
          for j=1:nact
              if sums0a0(i,j)==0
                 transitionr2(i,:,j)=0; 
              else
+                % 对每个 (S=i, A=j) 的行进行归一化，得到 T(S' | S,A)
                 transitionr2(i,:,j)=transitionr2(i,:,j)/sums0a0(i,j);
              end
          end
      end
  
-transitionr2(isnan(transitionr2))=0;  %replace NANs with zeros
-transitionr2(isinf(transitionr2))=0;  %replace infs with zeros
+% 数值清理
+transitionr2(isnan(transitionr2))=0;
+transitionr2(isinf(transitionr2))=0;
  
 % #################################################################################################################################
 disp('####  CREATE REWARD MATRIX  R(S,A) ####')
@@ -478,12 +476,6 @@ recqvi(modl,24)=quantile(bootmimictestwis,0.05);  %AI 95% LB, we want this as hi
 
 
 if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model
-drawnow limitrate;
-if ~uiProcessRequests(trainingUI, checkpointPath, modl, nr_reps, recqvi, OA, idxs, allpols, polkeep)
-    trainingCanceled = true;
-    updateTrainingStatus(trainingUI, sprintf('Training halted at model %d/%d.', modl, nr_reps));
-    break;
-end
 
 disp('########################## eICU TEST SET #############################')
 
@@ -615,32 +607,8 @@ if recqvi(modl,24)>0 & recqvi(modl,14)>0   % if 95% LB is >0 : save the model (o
     
 end
 
-drawnow limitrate;
-if ~uiProcessRequests(trainingUI, checkpointPath, modl, nr_reps, recqvi, OA, idxs, allpols, polkeep)
-    trainingCanceled = true;
-    updateTrainingStatus(trainingUI, sprintf('Training halted at model %d/%d.', modl, nr_reps));
-    break;
-end
-
  
 end
-
-end
-
-state = coreGetState(trainingUI.figure);
-if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
-    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
-    state.timerHandle = [];
-end
-state.isRunning = false;
-coreSetState(trainingUI.figure,state);
-
-if trainingCanceled
-    updateTrainingStatus(trainingUI, 'Training stopped by user. Skipping post-processing.');
-    return;
-end
-
-updateTrainingStatus(trainingUI, 'Training completed. Running post-processing...');
 
 recqvi(modl:end,:)=[];
 
@@ -1330,349 +1298,4 @@ end
 disp('IV FLUIDS')
 for i=1:5
 [min(reformat5(io==i,iol)) median(reformat5(io==i,iol)) max(reformat5(io==i,iol))]
-end
-
-% Final workspace snapshot for reproducibility
-try
-    saveFullWorkspaceSnapshot(core_dir, 'final');
-catch ME
-    warning('AIClinician:WorkspaceFinalSaveFailed','Final workspace save failed: %s', ME.message);
-end
-
-diary off  
-
-function resumeInfo = maybeLoadCheckpoint(trainingUI, defaultPath, totalIter)
-%MAYBELOADCHECKPOINT Optionally resume from an existing checkpoint.
-resumeInfo = [];
-choice = questdlg('Load an existing training checkpoint?', 'Resume Training', 'Yes', 'No', 'No');
-if ~strcmp(choice,'Yes')
-    return;
-end
-if nargin < 2 || isempty(defaultPath)
-    defaultPath = pwd;
-end
-[fileName, folderName] = uigetfile('*.mat','Select checkpoint to resume', defaultPath);
-if isequal(fileName,0)
-    updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
-    return;
-end
-fullPath = fullfile(folderName,fileName);
-try
-    loaded = load(fullPath,'checkpointData');
-catch loadErr
-    warning('AIClinician:CheckpointLoad','Failed to load checkpoint: %s', loadErr.message);
-    updateTrainingStatus(trainingUI, 'Checkpoint load failed. Starting fresh.');
-    return;
-end
-if ~isstruct(loaded) || ~isfield(loaded,'checkpointData') || ~isstruct(loaded.checkpointData)
-    warning('AIClinician:CheckpointFormat','Selected file does not contain checkpointData struct.');
-    updateTrainingStatus(trainingUI, 'Invalid checkpoint file. Starting fresh.');
-    return;
-end
-resumeInfo = loaded.checkpointData;
-resumeInfo.file = fullPath;
-if ~isfield(resumeInfo,'currentIteration') || ~isnumeric(resumeInfo.currentIteration)
-    resumeInfo.currentIteration = 0;
-end
-if ~isfield(resumeInfo,'elapsedSeconds') || ~isnumeric(resumeInfo.elapsedSeconds)
-    resumeInfo.elapsedSeconds = 0;
-end
-if ~isfield(resumeInfo,'polkeep') || ~isnumeric(resumeInfo.polkeep)
-    if isfield(resumeInfo,'allpols') && iscell(resumeInfo.allpols)
-        filled = find(~cellfun(@isempty,resumeInfo.allpols(:,1)),1,'last');
-        if isempty(filled)
-            resumeInfo.polkeep = 1;
-        else
-            resumeInfo.polkeep = filled + 1;
-        end
-    else
-        resumeInfo.polkeep = 1;
-    end
-end
-if resumeInfo.polkeep < 1
-    resumeInfo.polkeep = 1;
-end
-if nargin >= 3 && totalIter > 0 && resumeInfo.currentIteration > totalIter
-    resumeInfo.currentIteration = totalIter;
-end
-if ~isfield(resumeInfo,'recqvi'), warning('AIClinician:CheckpointMissingField','Checkpoint missing recqvi; starting fresh.'); resumeInfo = []; return; end
-if ~isfield(resumeInfo,'OA'), warning('AIClinician:CheckpointMissingField','Checkpoint missing OA; starting fresh.'); resumeInfo = []; return; end
-if ~isfield(resumeInfo,'allpols'), warning('AIClinician:CheckpointMissingField','Checkpoint missing allpols; starting fresh.'); resumeInfo = []; return; end
-if ~isfield(resumeInfo,'idxs'), warning('AIClinician:CheckpointMissingField','Checkpoint missing idxs; starting fresh.'); resumeInfo = []; return; end
-updateTrainingStatus(trainingUI, sprintf('Checkpoint selected: %s', fullPath));
-end
-
-function ui = setupTrainingUI()
-%SETUPTRAININGUI Create control panel for interactive training.
-fig = figure('Name','AI Clinician Training Control', ...
-    'NumberTitle','off','MenuBar','none','ToolBar','none','Resize','off', ...
-    'Position',[100 100 320 180],'CloseRequestFcn',@onClose);
-ui.figure = fig;
-ui.startButton = uicontrol(fig,'Style','pushbutton','String','Start / Resume', ...
-    'Position',[20 120 120 30],'Callback',@onStart);
-ui.pauseButton = uicontrol(fig,'Style','pushbutton','String','Pause', ...
-    'Position',[180 120 120 30],'Callback',@onPause);
-ui.saveButton = uicontrol(fig,'Style','pushbutton','String','Save Checkpoint', ...
-    'Position',[20 70 120 30],'Callback',@onSave);
-ui.stopButton = uicontrol(fig,'Style','pushbutton','String','Stop', ...
-    'Position',[180 70 120 30],'Callback',@onStop);
-ui.statusLabel = uicontrol(fig,'Style','text','String','Idle.', ...
-    'HorizontalAlignment','left','Position',[20 20 280 30], ...
-    'BackgroundColor',get(fig,'Color'));
-
-state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
-    'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
-setappdata(fig,'coreTrainState',state);
-setappdata(fig,'coreTrainUIHandles',ui);
-end
-
-function updateTrainingStatus(ui, message)
-%UPDATETRAININGSTATUS Refresh status text and cached state message with elapsed time.
-if nargin < 2 || isempty(message)
-    message = '';
-end
-if ~isfield(ui,'figure') || ~ishandle(ui.figure)
-    return;
-end
-state = coreGetState(ui.figure);
-if ~isempty(message)
-    state.statusMessage = message;
-else
-    message = state.statusMessage;
-end
-coreSetState(ui.figure,state);
-elapsed = coreElapsedSeconds(state);
-if isempty(message)
-    displayText = sprintf('Elapsed: %s', coreFormatElapsed(elapsed));
-else
-    displayText = sprintf('%s (Elapsed: %s)', message, coreFormatElapsed(elapsed));
-end
-if isfield(ui,'statusLabel') && ishandle(ui.statusLabel)
-    set(ui.statusLabel,'String',displayText);
-end
-drawnow limitrate;
-end
-
-function elapsed = coreElapsedSeconds(state)
-%COREELAPSEDSECONDS Compute elapsed training time from state.
-elapsed = 0;
-if isfield(state,'elapsedSeconds') && ~isempty(state.elapsedSeconds)
-    elapsed = double(state.elapsedSeconds);
-end
-if isfield(state,'timerHandle') && ~isempty(state.timerHandle)
-    elapsed = elapsed + toc(state.timerHandle);
-end
-end
-
-function txt = coreFormatElapsed(secondsValue)
-%COREFORMATELAPSED Format elapsed seconds as HH:MM:SS.
-if isnan(secondsValue) || ~isfinite(secondsValue) || secondsValue < 0
-    secondsValue = 0;
-end
-hours = floor(secondsValue/3600);
-minutes = floor(mod(secondsValue,3600)/60);
-seconds = floor(mod(secondsValue,60));
-txt = sprintf('%02d:%02d:%02d', hours, minutes, seconds);
-end
-
-function keepRunning = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep)
-%UIENSURERUNNING Block until training may continue or stop flag triggered.
-keepRunning = true;
-while true
-    if ~ishandle(ui.figure)
-        keepRunning = false;
-        return;
-    end
-    state = coreGetState(ui.figure);
-    if state.requestSave
-        elapsedSeconds = coreElapsedSeconds(state);
-        savedPath = saveTrainingCheckpoint(checkpointPath, currentIter, recqvi, OA, idxs, allpols, polkeep, elapsedSeconds, totalIter);
-        state.requestSave = false;
-        state.lastCheckpoint = savedPath;
-        coreSetState(ui.figure,state);
-        updateTrainingStatus(ui, sprintf('Checkpoint saved: %s', savedPath));
-    end
-    if state.shouldStop
-        keepRunning = false;
-        return;
-    end
-    if state.isRunning
-        return;
-    end
-    if totalIter > 0
-        msg = sprintf('Paused at model %d/%d. Press Start to resume.', max(currentIter,0), totalIter);
-    else
-        msg = 'Paused. Press Start to resume.';
-    end
-    updateTrainingStatus(ui, msg);
-    drawnow;
-    pause(0.05);
-end
-end
-
-function continueFlag = uiProcessRequests(ui, checkpointPath, currentIter, totalIter, recqvi, OA, idxs, allpols, polkeep)
-%UIPROCESSREQUESTS Handle pause/stop/save requests at safe checkpoints.
-continueFlag = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep);
-end
-
-function state = coreGetState(fig)
-%COREGETSTATE Retrieve UI state struct.
-if ~ishandle(fig)
-    state = struct('isRunning',false,'shouldStop',true,'requestSave',false, ...
-        'statusMessage','Window closed.','lastCheckpoint','');
-    return;
-end
-state = getappdata(fig,'coreTrainState');
-if isempty(state)
-    state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
-        'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
-    setappdata(fig,'coreTrainState',state);
-end
-end
-
-function coreSetState(fig,state)
-%CORESETSTATE Update UI state struct.
-if ishandle(fig)
-    setappdata(fig,'coreTrainState',state);
-end
-end
-
-function savedPath = saveTrainingCheckpoint(basePath, currentIter, recqvi, OA, idxs, allpols, polkeep, elapsedSeconds, totalIter)
-%SAVETRAININGCHECKPOINT Persist intermediate training data to disk.
-[folder, name, ext] = fileparts(basePath);
-if isempty(folder)
-    folder = pwd;
-end
-if isempty(name)
-    name = 'AIClinician_core_checkpoint';
-end
-if isempty(ext)
-    ext = '.mat';
-end
-timestamp = datestr(now,'yyyymmdd_HHMMSS');
-savedPath = fullfile(folder, sprintf('%s_iter%03d_%s%s', name, max(currentIter,0), timestamp, ext));
-checkpointData = struct('savedAt', datestr(now), ...
-    'currentIteration', currentIter, 'recqvi', recqvi, 'OA', OA, ...
-    'idxs', idxs, 'allpols', {allpols}, 'polkeep', polkeep, ...
-    'elapsedSeconds', elapsedSeconds, 'totalIterations', totalIter);
-save(savedPath,'checkpointData','-v7.3');
-
-% Also capture a full workspace snapshot alongside checkpoints
-try
-    label = sprintf('iter%03d', max(currentIter,0));
-    saveFullWorkspaceSnapshot(folder, label);
-catch ME
-    warning('AIClinician:WorkspaceSaveFailed','Workspace snapshot failed: %s', ME.message);
-end
-end
-
-function [workspacePath, rngPath] = saveFullWorkspaceSnapshot(baseFolder, label)
-%SAVEFULLWORKSPACESNAPSHOT Save all base-workspace variables and RNG state.
-if nargin < 1 || isempty(baseFolder)
-    baseFolder = pwd;
-end
-if nargin < 2 || isempty(label)
-    label = 'snapshot';
-end
-timestamp = datestr(now,'yyyymmdd_HHMMSS');
-snapDir = fullfile(baseFolder, 'artifacts', 'snapshots');
-if ~exist(snapDir,'dir')
-    mkdir(snapDir);
-end
-workspacePath = fullfile(snapDir, sprintf('workspace_%s_%s.mat', label, timestamp));
-rngPath = fullfile(snapDir, sprintf('rng_%s_%s.mat', label, timestamp));
-rngstate = rng; %#ok<NASGU>
-save(rngPath,'rngstate');
-% Save all variables from the base workspace
-cmd = ['save(''', workspacePath, ''',''-v7.3'');'];
-evalin('base', cmd);
-end
-
-function onStart(src,~)
-fig = ancestor(src,'figure');
-state = coreGetState(fig);
-if ~state.isRunning
-    state.timerHandle = tic;
-elseif isfield(state,'timerHandle') && isempty(state.timerHandle)
-    state.timerHandle = tic;
-end
-state.isRunning = true;
-state.shouldStop = false;
-coreSetState(fig,state);
-ui = getUIFromFigure(fig);
-updateTrainingStatus(ui,'Running...');
-end
-
-function onPause(src,~)
-fig = ancestor(src,'figure');
-state = coreGetState(fig);
-if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
-    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
-    state.timerHandle = [];
-end
-state.isRunning = false;
-state.shouldStop = false;
-coreSetState(fig,state);
-ui = getUIFromFigure(fig);
-updateTrainingStatus(ui,'Pause requested.');
-end
-
-function onStop(src,~)
-fig = ancestor(src,'figure');
-state = coreGetState(fig);
-if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
-    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
-    state.timerHandle = [];
-end
-state.shouldStop = true;
-state.isRunning = false;
-coreSetState(fig,state);
-ui = getUIFromFigure(fig);
-updateTrainingStatus(ui,'Stop requested.');
-end
-
-function onSave(src,~)
-fig = ancestor(src,'figure');
-state = coreGetState(fig);
-state.requestSave = true;
-coreSetState(fig,state);
-ui = getUIFromFigure(fig);
-updateTrainingStatus(ui,'Checkpoint request queued.');
-end
-
-function onClose(fig,~)
-state = coreGetState(fig);
-if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
-    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
-    state.timerHandle = [];
-end
-state.shouldStop = true;
-state.isRunning = false;
-coreSetState(fig,state);
-delete(fig);
-end
-
-function ui = getUIFromFigure(fig)
-ui = getappdata(fig,'coreTrainUIHandles');
-if isempty(ui) || ~isstruct(ui)
-    ui = struct('figure',fig);
-else
-    ui.figure = fig;
-end
-if ~isfield(ui,'statusLabel') || ~ishandle(ui.statusLabel)
-    ui.statusLabel = findobj(fig,'Style','text','-depth',1);
-end
-if ~isfield(ui,'startButton') || ~ishandle(ui.startButton)
-    ui.startButton = findobj(fig,'String','Start / Resume');
-end
-if ~isfield(ui,'pauseButton') || ~ishandle(ui.pauseButton)
-    ui.pauseButton = findobj(fig,'String','Pause');
-end
-if ~isfield(ui,'stopButton') || ~ishandle(ui.stopButton)
-    ui.stopButton = findobj(fig,'String','Stop');
-end
-if ~isfield(ui,'saveButton') || ~ishandle(ui.saveButton)
-    ui.saveButton = findobj(fig,'String','Save Checkpoint');
-end
-setappdata(fig,'coreTrainUIHandles',ui);
 end
