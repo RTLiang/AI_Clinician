@@ -1,5 +1,33 @@
 %% AI Clinician Identifiying MIMIC-III sepsis cohort
-
+% 结构
+%%Lines 1-45 (AIClinician_sepsis3_def_160219.m:1): 
+% 文件头注释、加载 reference_matrices.mat 中的映射表，并检查所需 MATLAB 工具箱是否安装。
+%%Lines 47-109 (AIClinician_sepsis3_def_160219.m:47): 
+% 逐个读取 exportdir/ 下的所有 CSV（培养、微生物、抗生素、人口学、各段 ce*.csv、化验、出入量、升压药、机械通气），为后续处理载入内存。
+%%Lines 110-245 (AIClinician_sepsis3_def_160219.m:110): 
+% 清洗微生物/培养表，填充缺失 icustay_id；修正人口学表中的 NaN；补充输液速率；将抗生素记录与具体 ICU stay 对齐。
+%%Lines 246-308 (AIClinician_sepsis3_def_160219.m:246): 
+% 按 Sepsis‑3 “疑似感染”规则（培养与抗生素的时间窗）为每个 ICU stay 计算感染起点 onset。
+%%Lines 309-361 (AIClinician_sepsis3_def_160219.m:309): 
+% 把生命体征与化验的 itemid 映射成 Refvitals/Reflabs 的列索引，便于后续直接落位到特征矩阵。
+%%Lines 362-508 (AIClinician_sepsis3_def_160219.m:362): 
+% 在感染起点前后 48h/24h 窗口内抽取生命体征、化验和机械通气时间点，合并成宽表 reformat，记录每个 ICU stay 的时间范围 qstime。
+%%Lines 509-748 (AIClinician_sepsis3_def_160219.m:509): 
+% 异常值剔除与互推逻辑（血压、FiO2、体温、血常规等），以及依据 O2 设备/流量推断缺失 FiO2、互补血压/温度/血红蛋白等派生值。
+%%Lines 750-757 (AIClinician_sepsis3_def_160219.m:750): 
+% 对原始宽表应用 Sample-and-Hold，将短期缺失用最近观测前向填充。
+%%Lines 759-967 (AIClinician_sepsis3_def_160219.m:759): 
+% 以 4 小时为步长聚合到 reformat2，同时计算每槽的液体入量、尿量、升压药统计及累计量。
+%%Lines 968-986 (AIClinician_sepsis3_def_160219.m:968): 
+% 将 reformat2 转成 table，丢弃缺失率 ≥70% 的变量，形成 reformat3t。
+%%Lines 987-1028 (AIClinician_sepsis3_def_160219.m:987): 
+% 对缺失率 <5% 的变量做线性插值，再分块执行 KNN 插补，生成 reformat4t。
+%%Lines 1029-1133 (AIClinician_sepsis3_def_160219.m:1029): 
+% 派生与规范化变量（性别、年龄、机械通气、升压药、P/F、Shock Index），并逐槽计算 SOFA 与 SIRS 评分。
+%%Lines 1134-1197 (AIClinician_sepsis3_def_160219.m:1134): 
+% 按启发式规则剔除异常住院（极端出入量、胆红素、疑似撤除治疗、窗口内死亡等）以清洗队列。
+%%Lines 1198-1249 (AIClinician_sepsis3_def_160219.m:1198): 
+% 汇总每个 ICU stay 的最大 SOFA/SIRS 与结局信息，筛选 max SOFA ≥2 的住院，输出 sepsis_mimiciii.csv 并保存备份 MAT 文件。
 % (c) Matthieu Komorowski, Imperial College London 2015-2019
 % as seen in publication: https://www.nature.com/articles/s41591-018-0213-5
 
@@ -13,12 +41,12 @@
 
 % STEPS:
 % -------------------------------
-% IMPORT DATA FROM CSV FILES
-% FLAG PRESUMED INFECTION
-% PREPROCESSING
-% REFORMAT in 4h time slots
-% COMPUTE SOFA at each time step
-% FLAG SEPSIS
+% IMPORT DATA FROM CSV FILES 从 CSV 文件导入数据
+% FLAG PRESUMED INFECTION 标记疑似感染
+% PREPROCESSING 预处理
+% REFORMAT in 4h time slots 在 4 小时时间段内重新格式化
+% COMPUTE SOFA at each time step 在每个时间步计算 SOFA
+% FLAG SEPSIS 标记败血症
 
 % note: the process generates the same features as the final MDP dataset, most of which are not used to compute SOFA
 % External files required: Reflabs, Refvitals, sample_and_hold (all saved in reference_matrices.mat file)

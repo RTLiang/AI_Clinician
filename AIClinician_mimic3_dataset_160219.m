@@ -1,5 +1,29 @@
 %% AI Clinician Building MIMIC-III dataset 
 
+%% 重新筛选出我们关注的-24h到48h患者状态，def则为筛选sepsis患者而选择-48-24h
+%% sepsis_def因为只需要筛选出sepsis定义人群，所使用的特征并非最终所有状态特征
+%结构
+%AIClinician_mimic3_dataset_160219.m:21）：
+% 加载 Sepsis-3 队列与原始事件表，筛出疑似感染前 24h 至后 48h（含 ±4h 缓冲）的 CHARTEVENTS/LAB/MV 记录，写入预分配矩阵 reformat 并记录各 stay 的关键时间戳。
+%异常值清理（AIClinician_mimic3_dataset_160219.m:154）：
+% 针对体重、血压、电解质等列按生理范围做上下限截断或单位修正，确保后续统计稳定。
+%变量互补/纠偏（AIClinician_mimic3_dataset_160219.m:260）：
+% 利用变量关系填补缺失（如 RASS→GCS、FiO₂ 百分比↔小数、温度单位、Hb↔Ht、总胆红素↔直接胆红素），并再次对 FiO₂ 做设备逻辑估算。
+%样本保持（SAH）（AIClinician_mimic3_dataset_160219.m:390）：
+% 对 68 列原始时间序列执行 sample-and-hold 插补，使观测在时间轴上连续。
+%数据合并成 4 小时格（AIClinician_mimic3_dataset_160219.m:402）：
+% 按 ICU stay 聚合到 4h 时间步，累积/分段计算液体输入、尿量、升压药剂量，并附加人口学与结局信息，形成 reformat2。
+%表裁剪（AIClinician_mimic3_dataset_160219.m:578）：
+% 给聚合结果命名列、挑出策略学习需要的核心变量，得到 reformat3t。
+%插补前调整（AIClinician_mimic3_dataset_160219.m:608）：
+% 规范性别/年龄、填补 Elixhauser 与升压药缺失，评估缺失率，并为 Shock Index、P/F 置占位。
+%缺失值处理（AIClinician_mimic3_dataset_160219.m:649）：
+% 对缺失率 <5% 的列做线性插值，剩余部分按 10k 行块使用 kNN（seuclidean）补齐。
+%派生指标（AIClinician_mimic3_dataset_160219.m:693）：
+% 重算 P/F、Shock Index（含极值处理），基于阈值规则生成逐时间步的 SOFA 与 SIRS，并修正液体相关变量。
+%最终表保存（AIClinician_mimic3_dataset_160219.m:784）：
+% 把 reformat4t 定名为 MIMICtable 并存入 ./BACKUP/MIMICtable.mat，供后续策略学习与评估调用。
+
 % 本脚本注释说明
 % -------------------------------------------------------------------------
 % 目的：在已识别的 Sepsis-3 队列基础上，围绕疑似感染时间重建 4 小时步长的特征时间序列，
@@ -20,6 +44,7 @@
 
 %% ########################################################################
 %           INITIAL REFORMAT WITH CHARTEVENTS, LABS AND MECHVENT
+%           使用 CHARTEVENTS、LABS 和机械通气数据进行初始重整
 % ########################################################################
 
 load('./BACKUP/AIClinician_sepsis3_def_160219.mat')
@@ -31,6 +56,7 @@ disp('INITIAL REFORMAT START');
 % Here i use -24 -> +48 because that's for the MDP
 % MDP 的时间范围是 -24 -> +48，与 sepsis3 定义的 -48 -> +24 不同
 % 注：为避免 4h 分箱边界截断，原始时间戳筛选时额外加入 ±4h 缓冲，
+% 例如：例如正好在感染前 24 小时这个点，直接截断可能导致它被排除或分到下一格。
 %     后续再在固定 80 小时时间带内（约 -28 → +52）做聚合。
 
 % 以下代码和 AIClinician_sepsis3_def_160219.m 高度相似，详细注释请参见该脚本。

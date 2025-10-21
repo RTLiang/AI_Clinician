@@ -63,38 +63,62 @@ load("./BACKUP/MIMICtable.mat")
 load("./exportdir/eicu/eICUtable_ready.mat")
 disp('####  INITIALISATION  ####') 
 
+trainingUI = setupTrainingUI();
+checkpointPath = fullfile(core_dir, 'AIClinician_core_checkpoint.mat');
 
-nr_reps=50;               % 迭代次数  nr of repetitions (total nr models)
+nr_reps=500;               % nr of repetitions (total nr models)
 nclustering=32;            % how many times we do clustering (best solution will be chosen)
-% 表示用不同随机初始质心把 k-means 重复跑 32 次，每次都会收敛到某个（可能不同的）局部最优。最终返回“簇内平方和最小”的那一次作为结果。
-prop=0.25;                 % 抽样多少做 k-means 聚类 proportion of the data we sample for clustering 
-gamma=0.99;                % MDP 折扣因子 discount factor gamma
-transthres=5;              % threshold for pruning the transition matrix 丢弃出现次数少于 5 次的状态-动作转移
-polkeep=1;                 % count of saved policies 每保存一个合格模型就递增，确保后续恢复时索引正确
+prop=0.25;                 % proportion of the data we sample for clustering
+gamma=0.99;                % gamma
+transthres=5;              % threshold for pruning the transition matrix
+polkeep=1;                 % count of saved policies
 ncl=750;                   % nr of states
-nra=5;                     % VP 和 IV 分别离散化等级，总共 nra^2 种联合动作空间 nr of actions (2 to 10)
-ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test) 控制每轮随机交叉验证拆分的折数，这里固定为 5 折（每次 80% 训练、20% 测试）。
-OA=NaN(752,nr_reps);       % 记录每次模型中各状态的最优动作 record of optimal actions
-recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model) 按模型积累训练/验证/eICU 的 WIS、QL 等关键指标，后续用来筛选表现最佳的候选模型
-allpols=cell(nr_reps,15);  % saving best candidate models 缓存通过阈值的模型及其关键对象（Q 表、转移矩阵、聚类中心等），供最终挑选和复现最佳策略时加载
+nra=5;                     % nr of actions (2 to 10)
+ncv=5;                     % nr of crossvalidation runs (each is 80% training / 20% test)
+OA=NaN(752,nr_reps);       % record of optimal actions
+recqvi=NaN(nr_reps*2,30);  % saves data about each model (1 row per model)
+allpols=cell(nr_reps,15);  % saving best candidate models
 
-
-
+startIter = 0;
+resumeIdxs = [];
+resumeInfo = maybeLoadCheckpoint(trainingUI, checkpointPath, nr_reps);
+if ~isempty(resumeInfo)
+    if isfield(resumeInfo,'recqvi'), recqvi = resumeInfo.recqvi; end
+    if isfield(resumeInfo,'OA'), OA = resumeInfo.OA; end
+    if isfield(resumeInfo,'allpols'), allpols = resumeInfo.allpols; end
+    if isfield(resumeInfo,'polkeep'), polkeep = resumeInfo.polkeep; end
+    if isfield(resumeInfo,'idxs'), resumeIdxs = resumeInfo.idxs; end
+    startIter = max(0, resumeInfo.currentIteration);
+    startIter = min(startIter, nr_reps);
+    if isfield(resumeInfo,'file')
+        [resumeDir,~,~] = fileparts(resumeInfo.file);
+        if ~isempty(resumeDir)
+            checkpointPath = fullfile(resumeDir, 'AIClinician_core_checkpoint.mat');
+        end
+    end
+    state = coreGetState(trainingUI.figure);
+    state.elapsedSeconds = resumeInfo.elapsedSeconds;
+    state.timerHandle = [];
+    state.isRunning = false;
+    state.shouldStop = false;
+    coreSetState(trainingUI.figure,state);
+    updateTrainingStatus(trainingUI, sprintf('Loaded checkpoint (%d/%d). Press Start to resume.', startIter, nr_reps));
+else
+    updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
+end
 
 
 % #################   Convert training data and compute conversion factors    ######################
 
 % all 47 columns of interest
-colbin = {'gender','mechvent','max_dose_vaso','re_admission'};% 二值表示
+colbin = {'gender','mechvent','max_dose_vaso','re_admission'};
 colnorm={'age','Weight_kg','GCS','HR','SysBP','MeanBP','DiaBP','RR','Temp_C','FiO2_1',...
     'Potassium','Sodium','Chloride','Glucose','Magnesium','Calcium',...
     'Hb','WBC_count','Platelets_count','PTT','PT','Arterial_pH','paO2','paCO2',...
-    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'}; % 连续变量
-collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'}; % 偏态分布，先做 log(0.1+x) 再 z-score
+    'Arterial_BE','HCO3','Arterial_lactate','SOFA','SIRS','Shock_Index','PaO2_FiO2','cumulated_balance'};
+collog={'SpO2','BUN','Creatinine','SGOT','SGPT','Total_bili','INR','input_total','input_4hourly','output_total','output_4hourly'};
 
-colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin));
-colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm));
-collog=find(ismember(MIMICtable.Properties.VariableNames,collog));
+colbin=find(ismember(MIMICtable.Properties.VariableNames,colbin));colnorm=find(ismember(MIMICtable.Properties.VariableNames,colnorm));collog=find(ismember(MIMICtable.Properties.VariableNames,collog));
 
 % find patients who died in ICU during data collection period
 % ii=MIMICtable.bloc==1&MIMICtable.died_within_48h_of_out_time==1& MIMICtable.delay_end_of_record_and_discharge_or_death<24;
@@ -153,7 +177,19 @@ eICUzs=eICUraw;
 eICUzs(:,1:3)=eICUzs(:,1:3)-0.5;
 eICUzs(:,4)=log(eICUzs(:,4)+0.1);
 eICUzs(:,5:36)=(eICUzs(:,5:36)-cmu)./csigma;
-eICUzs(:,37:47)=(log(0.1+eICUzs(:,37:47))-dmu)./dsigma;
+
+logcols = 0.1 + eICUraw(:,37:47);
+logcols(logcols<=0) = NaN;
+logcols = log(logcols);
+eICUzs(:,37:47) = (logcols - dmu)./dsigma;
+
+% Ensure the array passed to knnsearch is numeric, finite, and real
+eICUzs = double(eICUzs);
+bad = ~isfinite(eICUzs);
+eICUzs(bad) = 0;
+if ~isreal(eICUzs)
+    eICUzs = real(eICUzs);
+end
 
 if sum(isnan(eICUraw(:,4))) >0 || sum(isnan(eICUraw(:,45)))>0;  disp('NaNs in Xtest / drug doses'); disp('EXECUTION STOPPED'); return;end
 p=gcp('nocreate'); if isempty(p) ; pool = parpool; end ; mdp_verbose
@@ -207,6 +243,12 @@ N=size(X,1); %total number of rows to choose from
 sampl=X(find(floor(rand(N,1)+prop)),:);
 [~,C] = kmeans(sampl,ncl,'Options',options,'MaxIter',10000,...
     'Start','plus','Display','final','Replicates',nclustering);
+C = double(C);
+badC = ~isfinite(C);
+C(badC) = 0;
+if ~isreal(C)
+    C = real(C);
+end
 [idx]=knnsearch(C,X);  %N-D nearest point search: look for points closest to each centroid
 
 
@@ -1288,4 +1330,349 @@ end
 disp('IV FLUIDS')
 for i=1:5
 [min(reformat5(io==i,iol)) median(reformat5(io==i,iol)) max(reformat5(io==i,iol))]
+end
+
+% Final workspace snapshot for reproducibility
+try
+    saveFullWorkspaceSnapshot(core_dir, 'final');
+catch ME
+    warning('AIClinician:WorkspaceFinalSaveFailed','Final workspace save failed: %s', ME.message);
+end
+
+diary off  
+
+function resumeInfo = maybeLoadCheckpoint(trainingUI, defaultPath, totalIter)
+%MAYBELOADCHECKPOINT Optionally resume from an existing checkpoint.
+resumeInfo = [];
+choice = questdlg('Load an existing training checkpoint?', 'Resume Training', 'Yes', 'No', 'No');
+if ~strcmp(choice,'Yes')
+    return;
+end
+if nargin < 2 || isempty(defaultPath)
+    defaultPath = pwd;
+end
+[fileName, folderName] = uigetfile('*.mat','Select checkpoint to resume', defaultPath);
+if isequal(fileName,0)
+    updateTrainingStatus(trainingUI, 'Ready. Press Start to begin training.');
+    return;
+end
+fullPath = fullfile(folderName,fileName);
+try
+    loaded = load(fullPath,'checkpointData');
+catch loadErr
+    warning('AIClinician:CheckpointLoad','Failed to load checkpoint: %s', loadErr.message);
+    updateTrainingStatus(trainingUI, 'Checkpoint load failed. Starting fresh.');
+    return;
+end
+if ~isstruct(loaded) || ~isfield(loaded,'checkpointData') || ~isstruct(loaded.checkpointData)
+    warning('AIClinician:CheckpointFormat','Selected file does not contain checkpointData struct.');
+    updateTrainingStatus(trainingUI, 'Invalid checkpoint file. Starting fresh.');
+    return;
+end
+resumeInfo = loaded.checkpointData;
+resumeInfo.file = fullPath;
+if ~isfield(resumeInfo,'currentIteration') || ~isnumeric(resumeInfo.currentIteration)
+    resumeInfo.currentIteration = 0;
+end
+if ~isfield(resumeInfo,'elapsedSeconds') || ~isnumeric(resumeInfo.elapsedSeconds)
+    resumeInfo.elapsedSeconds = 0;
+end
+if ~isfield(resumeInfo,'polkeep') || ~isnumeric(resumeInfo.polkeep)
+    if isfield(resumeInfo,'allpols') && iscell(resumeInfo.allpols)
+        filled = find(~cellfun(@isempty,resumeInfo.allpols(:,1)),1,'last');
+        if isempty(filled)
+            resumeInfo.polkeep = 1;
+        else
+            resumeInfo.polkeep = filled + 1;
+        end
+    else
+        resumeInfo.polkeep = 1;
+    end
+end
+if resumeInfo.polkeep < 1
+    resumeInfo.polkeep = 1;
+end
+if nargin >= 3 && totalIter > 0 && resumeInfo.currentIteration > totalIter
+    resumeInfo.currentIteration = totalIter;
+end
+if ~isfield(resumeInfo,'recqvi'), warning('AIClinician:CheckpointMissingField','Checkpoint missing recqvi; starting fresh.'); resumeInfo = []; return; end
+if ~isfield(resumeInfo,'OA'), warning('AIClinician:CheckpointMissingField','Checkpoint missing OA; starting fresh.'); resumeInfo = []; return; end
+if ~isfield(resumeInfo,'allpols'), warning('AIClinician:CheckpointMissingField','Checkpoint missing allpols; starting fresh.'); resumeInfo = []; return; end
+if ~isfield(resumeInfo,'idxs'), warning('AIClinician:CheckpointMissingField','Checkpoint missing idxs; starting fresh.'); resumeInfo = []; return; end
+updateTrainingStatus(trainingUI, sprintf('Checkpoint selected: %s', fullPath));
+end
+
+function ui = setupTrainingUI()
+%SETUPTRAININGUI Create control panel for interactive training.
+fig = figure('Name','AI Clinician Training Control', ...
+    'NumberTitle','off','MenuBar','none','ToolBar','none','Resize','off', ...
+    'Position',[100 100 320 180],'CloseRequestFcn',@onClose);
+ui.figure = fig;
+ui.startButton = uicontrol(fig,'Style','pushbutton','String','Start / Resume', ...
+    'Position',[20 120 120 30],'Callback',@onStart);
+ui.pauseButton = uicontrol(fig,'Style','pushbutton','String','Pause', ...
+    'Position',[180 120 120 30],'Callback',@onPause);
+ui.saveButton = uicontrol(fig,'Style','pushbutton','String','Save Checkpoint', ...
+    'Position',[20 70 120 30],'Callback',@onSave);
+ui.stopButton = uicontrol(fig,'Style','pushbutton','String','Stop', ...
+    'Position',[180 70 120 30],'Callback',@onStop);
+ui.statusLabel = uicontrol(fig,'Style','text','String','Idle.', ...
+    'HorizontalAlignment','left','Position',[20 20 280 30], ...
+    'BackgroundColor',get(fig,'Color'));
+
+state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
+    'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
+setappdata(fig,'coreTrainState',state);
+setappdata(fig,'coreTrainUIHandles',ui);
+end
+
+function updateTrainingStatus(ui, message)
+%UPDATETRAININGSTATUS Refresh status text and cached state message with elapsed time.
+if nargin < 2 || isempty(message)
+    message = '';
+end
+if ~isfield(ui,'figure') || ~ishandle(ui.figure)
+    return;
+end
+state = coreGetState(ui.figure);
+if ~isempty(message)
+    state.statusMessage = message;
+else
+    message = state.statusMessage;
+end
+coreSetState(ui.figure,state);
+elapsed = coreElapsedSeconds(state);
+if isempty(message)
+    displayText = sprintf('Elapsed: %s', coreFormatElapsed(elapsed));
+else
+    displayText = sprintf('%s (Elapsed: %s)', message, coreFormatElapsed(elapsed));
+end
+if isfield(ui,'statusLabel') && ishandle(ui.statusLabel)
+    set(ui.statusLabel,'String',displayText);
+end
+drawnow limitrate;
+end
+
+function elapsed = coreElapsedSeconds(state)
+%COREELAPSEDSECONDS Compute elapsed training time from state.
+elapsed = 0;
+if isfield(state,'elapsedSeconds') && ~isempty(state.elapsedSeconds)
+    elapsed = double(state.elapsedSeconds);
+end
+if isfield(state,'timerHandle') && ~isempty(state.timerHandle)
+    elapsed = elapsed + toc(state.timerHandle);
+end
+end
+
+function txt = coreFormatElapsed(secondsValue)
+%COREFORMATELAPSED Format elapsed seconds as HH:MM:SS.
+if isnan(secondsValue) || ~isfinite(secondsValue) || secondsValue < 0
+    secondsValue = 0;
+end
+hours = floor(secondsValue/3600);
+minutes = floor(mod(secondsValue,3600)/60);
+seconds = floor(mod(secondsValue,60));
+txt = sprintf('%02d:%02d:%02d', hours, minutes, seconds);
+end
+
+function keepRunning = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep)
+%UIENSURERUNNING Block until training may continue or stop flag triggered.
+keepRunning = true;
+while true
+    if ~ishandle(ui.figure)
+        keepRunning = false;
+        return;
+    end
+    state = coreGetState(ui.figure);
+    if state.requestSave
+        elapsedSeconds = coreElapsedSeconds(state);
+        savedPath = saveTrainingCheckpoint(checkpointPath, currentIter, recqvi, OA, idxs, allpols, polkeep, elapsedSeconds, totalIter);
+        state.requestSave = false;
+        state.lastCheckpoint = savedPath;
+        coreSetState(ui.figure,state);
+        updateTrainingStatus(ui, sprintf('Checkpoint saved: %s', savedPath));
+    end
+    if state.shouldStop
+        keepRunning = false;
+        return;
+    end
+    if state.isRunning
+        return;
+    end
+    if totalIter > 0
+        msg = sprintf('Paused at model %d/%d. Press Start to resume.', max(currentIter,0), totalIter);
+    else
+        msg = 'Paused. Press Start to resume.';
+    end
+    updateTrainingStatus(ui, msg);
+    drawnow;
+    pause(0.05);
+end
+end
+
+function continueFlag = uiProcessRequests(ui, checkpointPath, currentIter, totalIter, recqvi, OA, idxs, allpols, polkeep)
+%UIPROCESSREQUESTS Handle pause/stop/save requests at safe checkpoints.
+continueFlag = uiEnsureRunning(ui, currentIter, totalIter, checkpointPath, recqvi, OA, idxs, allpols, polkeep);
+end
+
+function state = coreGetState(fig)
+%COREGETSTATE Retrieve UI state struct.
+if ~ishandle(fig)
+    state = struct('isRunning',false,'shouldStop',true,'requestSave',false, ...
+        'statusMessage','Window closed.','lastCheckpoint','');
+    return;
+end
+state = getappdata(fig,'coreTrainState');
+if isempty(state)
+    state = struct('isRunning',false,'shouldStop',false,'requestSave',false, ...
+        'statusMessage','Idle.','lastCheckpoint','', 'elapsedSeconds',0,'timerHandle',[]);
+    setappdata(fig,'coreTrainState',state);
+end
+end
+
+function coreSetState(fig,state)
+%CORESETSTATE Update UI state struct.
+if ishandle(fig)
+    setappdata(fig,'coreTrainState',state);
+end
+end
+
+function savedPath = saveTrainingCheckpoint(basePath, currentIter, recqvi, OA, idxs, allpols, polkeep, elapsedSeconds, totalIter)
+%SAVETRAININGCHECKPOINT Persist intermediate training data to disk.
+[folder, name, ext] = fileparts(basePath);
+if isempty(folder)
+    folder = pwd;
+end
+if isempty(name)
+    name = 'AIClinician_core_checkpoint';
+end
+if isempty(ext)
+    ext = '.mat';
+end
+timestamp = datestr(now,'yyyymmdd_HHMMSS');
+savedPath = fullfile(folder, sprintf('%s_iter%03d_%s%s', name, max(currentIter,0), timestamp, ext));
+checkpointData = struct('savedAt', datestr(now), ...
+    'currentIteration', currentIter, 'recqvi', recqvi, 'OA', OA, ...
+    'idxs', idxs, 'allpols', {allpols}, 'polkeep', polkeep, ...
+    'elapsedSeconds', elapsedSeconds, 'totalIterations', totalIter);
+save(savedPath,'checkpointData','-v7.3');
+
+% Also capture a full workspace snapshot alongside checkpoints
+try
+    label = sprintf('iter%03d', max(currentIter,0));
+    saveFullWorkspaceSnapshot(folder, label);
+catch ME
+    warning('AIClinician:WorkspaceSaveFailed','Workspace snapshot failed: %s', ME.message);
+end
+end
+
+function [workspacePath, rngPath] = saveFullWorkspaceSnapshot(baseFolder, label)
+%SAVEFULLWORKSPACESNAPSHOT Save all base-workspace variables and RNG state.
+if nargin < 1 || isempty(baseFolder)
+    baseFolder = pwd;
+end
+if nargin < 2 || isempty(label)
+    label = 'snapshot';
+end
+timestamp = datestr(now,'yyyymmdd_HHMMSS');
+snapDir = fullfile(baseFolder, 'artifacts', 'snapshots');
+if ~exist(snapDir,'dir')
+    mkdir(snapDir);
+end
+workspacePath = fullfile(snapDir, sprintf('workspace_%s_%s.mat', label, timestamp));
+rngPath = fullfile(snapDir, sprintf('rng_%s_%s.mat', label, timestamp));
+rngstate = rng; %#ok<NASGU>
+save(rngPath,'rngstate');
+% Save all variables from the base workspace
+cmd = ['save(''', workspacePath, ''',''-v7.3'');'];
+evalin('base', cmd);
+end
+
+function onStart(src,~)
+fig = ancestor(src,'figure');
+state = coreGetState(fig);
+if ~state.isRunning
+    state.timerHandle = tic;
+elseif isfield(state,'timerHandle') && isempty(state.timerHandle)
+    state.timerHandle = tic;
+end
+state.isRunning = true;
+state.shouldStop = false;
+coreSetState(fig,state);
+ui = getUIFromFigure(fig);
+updateTrainingStatus(ui,'Running...');
+end
+
+function onPause(src,~)
+fig = ancestor(src,'figure');
+state = coreGetState(fig);
+if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
+    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
+    state.timerHandle = [];
+end
+state.isRunning = false;
+state.shouldStop = false;
+coreSetState(fig,state);
+ui = getUIFromFigure(fig);
+updateTrainingStatus(ui,'Pause requested.');
+end
+
+function onStop(src,~)
+fig = ancestor(src,'figure');
+state = coreGetState(fig);
+if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
+    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
+    state.timerHandle = [];
+end
+state.shouldStop = true;
+state.isRunning = false;
+coreSetState(fig,state);
+ui = getUIFromFigure(fig);
+updateTrainingStatus(ui,'Stop requested.');
+end
+
+function onSave(src,~)
+fig = ancestor(src,'figure');
+state = coreGetState(fig);
+state.requestSave = true;
+coreSetState(fig,state);
+ui = getUIFromFigure(fig);
+updateTrainingStatus(ui,'Checkpoint request queued.');
+end
+
+function onClose(fig,~)
+state = coreGetState(fig);
+if state.isRunning && isfield(state,'timerHandle') && ~isempty(state.timerHandle)
+    state.elapsedSeconds = state.elapsedSeconds + toc(state.timerHandle);
+    state.timerHandle = [];
+end
+state.shouldStop = true;
+state.isRunning = false;
+coreSetState(fig,state);
+delete(fig);
+end
+
+function ui = getUIFromFigure(fig)
+ui = getappdata(fig,'coreTrainUIHandles');
+if isempty(ui) || ~isstruct(ui)
+    ui = struct('figure',fig);
+else
+    ui.figure = fig;
+end
+if ~isfield(ui,'statusLabel') || ~ishandle(ui.statusLabel)
+    ui.statusLabel = findobj(fig,'Style','text','-depth',1);
+end
+if ~isfield(ui,'startButton') || ~ishandle(ui.startButton)
+    ui.startButton = findobj(fig,'String','Start / Resume');
+end
+if ~isfield(ui,'pauseButton') || ~ishandle(ui.pauseButton)
+    ui.pauseButton = findobj(fig,'String','Pause');
+end
+if ~isfield(ui,'stopButton') || ~ishandle(ui.stopButton)
+    ui.stopButton = findobj(fig,'String','Stop');
+end
+if ~isfield(ui,'saveButton') || ~ishandle(ui.saveButton)
+    ui.saveButton = findobj(fig,'String','Save Checkpoint');
+end
+setappdata(fig,'coreTrainUIHandles',ui);
 end
