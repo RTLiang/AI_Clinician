@@ -6,8 +6,10 @@
 % version 16 Feb 19
 % Builds 500 models using MIMIC-III training data
 % Records best candidate models along the way from off-policy policy evaluation on MIMIC-III validation data
-% Tests the best model on eRI data
-
+% Tests the best model on eRI 
+% 使用 MIMIC-III 训练数据构建 500 个模型
+% 记录在 MIMIC-III 验证数据上进行离线策略评估过程中的最佳候选模型
+% 在 eRI 数据上测试最佳模型
 
 % TAKES:
         % MIMICtable = m*59 table with raw values from MIMIC
@@ -15,14 +17,14 @@
         
 
 % GENERATES:
-        % MIMICraw = MIMIC RAW DATA m*47 array with columns in right order
-        % MIMICzs = MIMIC ZSCORED m*47 array with columns in right order, matching MIMICraw
-        % eICUraw = eICU RAW DATA n*47 array with columns in right order, matching MIMICraw
-        % eICUzs = eICU ZSCORED n*47 array with columns in right order, matching MIMICraw
-        % recqvi = summary statistics of all 500 models
-        % idxs = state membership of MIMIC test records, for all 500 models
-     	% OA = optimal policy, for all 500 models
-        % allpols = detailed data about the best candidate models
+        % MIMICraw 原始矩阵 = MIMIC RAW DATA m*47 array with columns in right order
+        % MIMICzs Z-score标准化后矩阵 = MIMIC ZSCORED m*47 array with columns in right order, matching MIMICraw
+        % eICUraw 原始矩阵= eICU RAW DATA n*47 array with columns in right order, matching MIMICraw
+        % eICUzs 标准化后矩阵 = eICU ZSCORED n*47 array with columns in right order, matching MIMICraw
+        % recqvi 模型摘要指标 = summary statistics of all 500 models
+        % idxs 500个模型的状态簇索引 = state membership of MIMIC test records, for all 500 models
+     	% OA “最优策略”动作映射 = optimal policy, for all 500 models
+        % allpols 详细信息 = detailed data about the best candidate models
 
 % This code is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
 % without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE
@@ -31,7 +33,7 @@
 % The original cohort from the 2018 Nature Medicine publication was built using MIMIC-III v1.3.
 
 % ############################  MODEL PARAMETERS   #####################################
-
+%  环境参数初始化：检查工具箱，载入数据表格，设定核心参数（状态数、动作数、折扣因子、交叉验证折数）
 
 v = ver;  % 获取当前安装的工具箱列表
 installed = {v.Name};
@@ -83,6 +85,8 @@ allpols=cell(nr_reps,15);  % saving best candidate models 缓存通过阈值的�
 
 
 % #################   Convert training data and compute conversion factors    ######################
+
+%################## 保留原始数值并将数据归一化 ##################%
 
 % all 47 columns of interest
 colbin = {'gender','mechvent','max_dose_vaso','re_admission'};% 二值表示
@@ -160,6 +164,8 @@ eICUzs(:,4)=log(eICUzs(:,4)+0.1);
 eICUzs(:,5:36)=(eICUzs(:,5:36)-cmu)./csigma;
 eICUzs(:,37:47)=(log(0.1+eICUzs(:,37:47))-dmu)./dsigma;
 
+%##################归一化结束，构建策略迭代所需变量##################%
+
 % Guard against missing vasopressor or fluid doses before continuing
 % 如果 eICU 的关键剂量列（血管加压素 eICUraw(:,4)、4 小时液体量 `eICUraw(:,45)）仍有 NaN，就打印提示并中止脚本，避免后续聚类/剂量离散化依赖的核心字段缺失导致错误。
 hasMissingVaso = any(isnan(eICUraw(:,4)));
@@ -172,6 +178,7 @@ if hasMissingVaso || hasMissingFluids
 end
 
 % Initialise or reuse the parallel pool and enable verbose MDP logging
+% 初始化或重用并行池并启用详细 MDP 日志记录
 p = gcp('nocreate');
 if isempty(p)
     pool = parpool;
@@ -220,6 +227,7 @@ sampl=X(find(floor(rand(N,1)+prop)),:); %按 prop=0.25 的概率对当前训练�
 
 
 %  ############################# CREATE ACTIONS  ########################
+
 % 将静脉液体 (input_4hourly) 与升压剂 (max_dose_vaso) 的连续剂量离散成 5×5 个联合动作：
 %   1. 找到两种剂量列的索引，并提取全量 MIMIC 样本的历史给药记录；
 %   2. 对非零剂量做分位数排名后映射到 4 个非零等级，并把 0 剂量保留为等级 1；
@@ -249,7 +257,8 @@ actionbloctrain=actionbloc(train);
 uniqueValuesdose=[ ma2(uniqueValues.med2)' ma1(uniqueValues.med1)'];  % median dose of each bin for all 25 actions
  
  
-% ###################################################################################################################################
+% ####################### 整理为MDP需要的表格形式，创建QLDATA3 ###############################################################################
+
 % 构造 TD/MDP 输入矩阵 qldata3：
 %   - 初始 qldata 包含原始 bloc（时间步），聚类状态 idx，离散动作 actionbloctrain，
 %     以及 0/1 死亡标签 Y90 转换出的 ±100 奖励；
@@ -276,13 +285,14 @@ abss=[ncl+2 ncl+1]; %absorbing states numbers 定义两个吸收态 id：ncl+2 �
         qldata3(c+1:end,:)=[]; % 删除预分配中未写入的多余行，留下实际轨迹矩阵。
 
  
-% ###################################################################################################################################
-% 构建转移概率张量 T(S' | S, A)（以列存放 S'，便于按 (S,A) 归一化）
+% ############################# 构建状态转移函数 #########################################################################################
+
+% 构建转移概率函数 T(S' | S, A)（以列存放 S'，便于按 (S,A) 归一化）
 % - transitionr(S1,S0,A) 先累计 (S0→S1 在动作 A 下) 的发生次数
 % - sums0a0(S0,A) 记录每个 (S0,A) 的总次数
 % - 之后对每个 (S0,A) 的列归一化，得到条件概率 T(S' | S0,A)
 disp('####  CREATE TRANSITION MATRIX T(S'',S,A) ####')
- 
+% transitionr用列表示 (S, A)，便于用 sums0a0 推导临床行为策略 π_phys(A|S)；
 transitionr=zeros(ncl+2,ncl+2,nact);  % T(S',S,A) 维度：[S' x S x A]
 sums0a0=zeros(ncl+2,nact);            % (S,A) 计数表，用于归一化和估计行为策略
  
@@ -321,7 +331,7 @@ physpol=sums0a0./sum(sums0a0')';
 % - transitionr2(S0,S1,A) 计数 (S0→S1 | A)
 % - 之后对每个 (S0,A) 的行归一化，得到 T(S' | S0,A)
 disp('####  CREATE TRANSITION MATRIX T(S,S'',A)  ####')
- 
+% transitionr2把 (S, A) 放在行上，供MDP
 transitionr2=zeros(ncl+2,ncl+2,nact);  % T(S,S',A) 维度：[S x S' x A]
 sums0a0=zeros(ncl+2,nact);             % 重新统计 (S,A) 计数
  
@@ -352,28 +362,35 @@ sums0a0=zeros(ncl+2,nact);             % 重新统计 (S,A) 计数
 transitionr2(isnan(transitionr2))=0;
 transitionr2(isinf(transitionr2))=0;
  
-% #################################################################################################################################
+% ################################# 奖励矩阵构建 #############################################################################
 disp('####  CREATE REWARD MATRIX  R(S,A) ####')
 % CF sutton& barto bottom 1998 page 106. i compute R(S,A) from R(S'SA) and T(S'SA)
 r3=zeros(ncl+2,ncl+2,nact); r3(ncl+1,:,:)=-100; r3(ncl+2,:,:)=100;
 R=sum(transitionr.*r3);
 R=squeeze(R);   %remove 1 unused dimension
 
-% ###################################################################################################################################
+% ################################## 策略迭代 #####################################################################################
 disp('####   POLICY ITERATION   ####')
 
  [~,~,~,~,Qon] = mdp_policy_iteration_with_Q(transitionr2, R, gamma, ones(ncl+2,1));
  [~,OptimalAction]=max(Qon,[],2);  %deterministic 
  OA(:,modl)=OptimalAction; %save optimal actions
  
+
+ % ################################## OPE for 训练集 #####################################################################################
+
 disp('#### OFF-POLICY EVALUATION - MIMIC TRAIN SET ####')
  
 % create new version of QLDATA3
+% 重建QLDATA3，包含OPE所需信息
 r=[100 -100];
 r2=r.*(2*(1-Y90)-1); 
 qldata=[blocs idx actionbloctrain Y90 zeros(numel(idx),1) r2(:,1) ptid];  % contains bloc / state / action / outcome&reward     %1 = died
 qldata3=zeros(floor(size(qldata,1)*1.2),8); 
 
+% 软化策略：如果临床行为策略在某个状态对某个动作的概率是 0，而目标策略给了正概率，就会出现分母为 0 或权重无穷大的情况，评估结果失真。
+% softpi：把医生策略中原本为 0 的动作均匀分配上一点概率，非零动作相应地减去同样的总量；
+% softb：目标策略也是相同处理，让最优动作权重 1-p，其余动作均摊剩下的 p。
 c=0;
 abss=[ncl+2 ncl+1]; %absorbing states numbers
  
@@ -408,12 +425,14 @@ qldata3(i,7)=OptimalAction(qldata3(i,2));   %optimal action
     end
 end
 
-qldata3train=qldata3;
+qldata3train=qldata3; %qldata3 保存到 qldata3train
 
+% 调用 offpolicy_multiple_eval_010518 做离策略评估
 tic
  [ bootql,bootwis ] = offpolicy_multiple_eval_010518( qldata3,physpol, 0.99,1,6,750);
 toc
 
+%模型（第 modl 次迭代）的离策略评估结果存进 recqvi
 recqvi(modl,1)=modl;
 recqvi(modl,4)=nanmean(bootql);
 recqvi(modl,5)=quantile(bootql,0.99);
@@ -421,13 +440,17 @@ recqvi(modl,6)=nanmean(bootwis);  %we want this as high as possible
 recqvi(modl,7)=quantile(bootwis,0.05);  %we want this as high as possible
 
 
+ % ################################## OPE for 内部测试集 #####################################################################################
+
 % testing on MIMIC-test
 disp('#### OFF-POLICY EVALUATION - MIMIC TEST SET ####')
     
 % create new version of QLDATA3 with MIMIC TEST samples
+% 将测试集的特征分配到752个聚类状态
 idxtest=knnsearch(C,Xtestmimic);
 idxs(test,modl)=idxtest;  %important: record state membership of test cohort
 
+%包含OPE所需信息
 actionbloctest=actionbloc(~train);
 Y90test=reformat5(~train,outcome);
 r=[100 -100];
@@ -435,6 +458,7 @@ r2=r.*(2*(1-Y90test)-1);
 qldata=[bloctestmimic idxtest actionbloctest Y90test zeros(numel(idxtest),1) r2(:,1) ptidtestmimic];  % contains bloc / state / action / outcome&reward     %1 = died
 qldata3=zeros(floor(size(qldata,1)*1.2),8); 
 
+% 把每个时间步的状态/动作复制到 8 列的 qldata3，并在每个病人终点插入吸收态行
 c=0;
 abss=[ncl+2 ncl+1]; %absorbing states numbers
  
@@ -447,6 +471,7 @@ abss=[ncl+2 ncl+1]; %absorbing states numbers
         qldata3(c+1:end,:)=[];
 
 % add pi(s,a) and b(s,a)
+% 软化
 p=0.01; %small correction factor // softening policies
 softpi=physpol; % behavior policy = clinicians'
 for i=1:750;  ii=softpi(i,:)==0;    z=p/sum(ii);    nz=p/sum(~ii);    softpi(i,ii)=z;   softpi(i,~ii)=softpi(i,~ii)-nz; end
@@ -475,10 +500,14 @@ recqvi(modl,23)=quantile(bootmimictestwis,0.01);
 recqvi(modl,24)=quantile(bootmimictestwis,0.05);  %AI 95% LB, we want this as high as possible
 
 
-if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model
+if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model % WIS 评估的 5% 分位数（quantile(bootmimictestwis, 0.05)），如果它大于 40，就说明保守置信下界不错，于是继续执行 eICU 评估；反之则跳过进入下一次模型训练。
 
-disp('########################## eICU TEST SET #############################')
 
+    % ################################## OPE for 外部测试集 #####################################################################################
+
+ disp('########################## eICU TEST SET #############################')
+
+ % 把eICU数据映射到聚类状态
   idxtest2=cell(size(eICUzs,1),1);
         ii=isnan(eICUzs);
         disp('####   IDENTIFY STATE MEMBERSHIP OF eICU TEST RECORDS   ####')
@@ -490,6 +519,8 @@ disp('########################## eICU TEST SET #############################')
     
   idxtest2=cell2mat(idxtest2);
 
+
+% 将eICU的动作映射到我们在MIMIC中构建的动作上
 iol=find(ismember(MIMICtable.Properties.VariableNames,{'input_4hourly'}));
 vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
  
@@ -533,11 +564,12 @@ Y90test=eICUtable.hospmortality;
 r=[100 -100];
 r2=r.*(2*(1-Y90test)-1); 
 models=OptimalAction(idxtest2);                  %optimal action for each record
+%把动作编号映射回 MIMIC 训练时计算的代表剂量，得到模型对这条 eICU 记录给出的实际剂量建议。
 modeldosevaso = uniqueValuesdose(models,1);      %dose reco in this model
 modeldosefluid = uniqueValuesdose(models,2);     %dose reco in this model
 
 
-
+% 构建 eICU 版本的轨迹表 qldata2，格式比前面多了一些列，用于同时记录真实给药和模型推荐剂量
 qldata=[blocstest idxtest2 actionbloctest Y90test zeros(numel(idxtest2),1) r2(:,1) ptid  iol vcl modeldosefluid modeldosevaso  Y90test ];  % contains bloc / state / action / outcome&reward     %1 = died
 qldata2=zeros(floor(size(qldata,1)*1.2),13); 
 c=0;
@@ -554,7 +586,7 @@ abss=[ncl+2 ncl+1]; %absorbing states numbers
 qldata2(c+1:end,:)=[];
 
 
-% add pi(s,a) and b(s,a)
+% 软化 add pi(s,a) and b(s,a)
 p=0.01; % softening policies
 
 softpi=physpol;%physpoleicu;   
@@ -588,7 +620,10 @@ recqvi(modl,14)=quantile(booteicuwis,0.05);
 
 end
 
+% ################################## 挑选最优模型 #####################################################################################
+% ########################## 同时跑MIMIC和外部测试eICU，共同挑选最优 #####################################################################################
 
+%MIMIC 测试集上的 WIS 5% 分位（95% 置信下界）为正且eICU 评估的对应下界也为正的模型保留
 if recqvi(modl,24)>0 & recqvi(modl,14)>0   % if 95% LB is >0 : save the model (otherwise it's pointless)
     
     disp('####   GOOD MODEL FOUND - SAVING IT   ####' ) 
@@ -618,6 +653,7 @@ toc
 
 
 %% IDENTIFIES BEST MODEL HERE
+%% eICU 的 WIS 下界 < 0 的模型过滤掉， MIMIC 测试集上 AI 策略 WIS 的 95% 下界；取这列最大的那一行
 
 recqvi(:,31:end)=[];
 
@@ -630,12 +666,14 @@ bestpol=r(max(r(:,24))==r(:,24),1);   % model maximising 95% LB of value of AI p
 
 
 %% RECOVER BEST MODEL and TEST IT
+%% 挑选出最优模型
 disp('####   RECOVER BEST MODEL   ####')
 a=cell2mat(allpols(:,1));
 outcome =10; %   HOSPITAL MORTALITY = 8 / 90d MORTA = 10
 ii=find(a==bestpol); %position of best model in the array allpols
 
 % RECOVER MODEL DATA
+% 提取最优模型的所有数据，以便后续报告
 Qoff=cell2mat(allpols(ii,2));
 Qon=cell2mat(allpols(ii,3));
 physpol=cell2mat(allpols(ii,4));
@@ -666,6 +704,7 @@ ptidtestmimic=reformat5(test,2);
 
 
 %recover state membership of eicu samples
+% 最佳模型的聚类中心 C 来给 eICU 每条记录分配状态
 disp('####   IDENTIFY STATE MEMBERSHIP OF eICU TEST RECORDS   ####')
   idxtest2=cell(size(eICUzs,1),1);
         ii=isnan(eICUzs);
@@ -677,6 +716,9 @@ disp('####   IDENTIFY STATE MEMBERSHIP OF eICU TEST RECORDS   ####')
     
   idxtest2=cell2mat(idxtest2);
 
+
+
+% ################################## 绘图与分析 #####################################################################################
 
 
 %% FIB 2A plot safety of algos: 95th UB of physicians policy value vs 95th LB of AI policy
