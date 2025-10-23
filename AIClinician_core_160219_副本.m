@@ -194,10 +194,10 @@ warning('off', 'all')
 
 
 for modl=1:nr_reps  % MAIN LOOP OVER ALL MODELS 
-    % modl 主循环迭代计数，范围 1:nr_reps
+    % modl 主循环迭代计数，范围 1:nr_reps（定义的迭代次数，默认为500）
    
   N=numel(icuuniqueids); % total number of rows to choose from
-  grp=floor(ncv*rand(N,1)+1);  %list of 1 to 5 (20% of the data in each grp) -- this means that train/test MIMIC split are DIFFERENT in all the 500 models 交叉验证折号，随机抽取 80%/20% 作为训练/测试集
+  grp=floor(ncv*rand(N,1)+1);  % 交叉验证折号，随机抽取 80%/20% 作为训练/测试集 list of 1 to 5 (20% of the data in each grp) -- this means that train/test MIMIC split are DIFFERENT in all the 500 models 
   crossval=1; % 当前作为测试折的编号（固定为 1），其余折都归入训练集。
   trainidx=icuuniqueids(crossval~=grp); % 被划分为训练集的 ICU 住院号集合，不属于 crossval 的 grp 集合
   testidx=icuuniqueids(crossval==grp); % 被划分为测试集的 ICU 住院号集合，属于 crossval 的 grp 集合
@@ -239,31 +239,32 @@ nact=nra^2; % 状态空间 nra^2 = 25
 iol=find(ismember(MIMICtable.Properties.VariableNames,{'input_4hourly'}));
 vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
  
- a= reformat5(:,iol);                   %IV fluid
- a= tiedrank(a(a>0)) / length(a(a>0));   % excludes zero fluid (will be action 1)
- 
-        iof=floor((a+0.2499999999)*4);  %converts iv volume in 4 actions
-        a= reformat5(:,iol); a=find(a>0);  %location of non-zero fluid in big matrix
-        io=ones(size(reformat5,1),1);  %array of ones, by default     
-        io(a)=iof+1;   %where more than zero fluid given: save actual action
-        vc=reformat5(:,vcl);  vcr= tiedrank(vc(vc~=0)) / numel(vc(vc~=0)); vcr=floor((vcr+0.249999999999)*4);  %converts to 4 bins
-        vcr(vcr==0)=1; vc(vc~=0)=vcr+1; vc(vc==0)=1;
-        ma1=[ median(reformat5(io==1,iol))  median(reformat5(io==2,iol))  median(reformat5(io==3,iol))  median(reformat5(io==4,iol))  median(reformat5(io==5,iol))];  %median dose of drug in all bins
-        ma2=[ median(reformat5(vc==1,vcl))  median(reformat5(vc==2,vcl))  median(reformat5(vc==3,vcl))  median(reformat5(vc==4,vcl))  median(reformat5(vc==5,vcl))] ;
-  
-med=[io vc];
-[uniqueValues,~,actionbloc] = unique(array2table(med),'rows');
-actionbloctrain=actionbloc(train);
+a= reformat5(:,iol);                   % 提取所有 4 小时静脉补液量的连续数值
+a= tiedrank(a(a>0)) / length(a(a>0));   % 仅对非零补液做秩次排名，转成 (0,1] 分位数，准备划入 4 档非零剂量
+
+        iof=floor((a+0.2499999999)*4);  % 将分位数平移 0.25 后放大 4 倍并取整 → 0~3，代表四档非零补液
+        a= reformat5(:,iol); a=find(a>0);  % 找到补液量>0 的行索引
+        io=ones(size(reformat5,1),1);  % 默认所有行都归入等级 1（即 0 剂量）
+        io(a)=iof+1;   % 对非零行加 1，将 0~3 映射到 2~5，形成 “0 剂量 + 4 档非零” 共 5 档补液动作
+        vc=reformat5(:,vcl);  vcr= tiedrank(vc(vc~=0)) / numel(vc(vc~=0)); vcr=floor((vcr+0.249999999999)*4);  % 对升压剂的非零历史剂量重复同样步骤，得到四档非零剂量
+        vcr(vcr==0)=1; vc(vc~=0)=vcr+1; vc(vc==0)=1;   % 将 0~3 映射成 1~4，再与零剂量合并，得到 5 档升压剂动作
+        ma1=[ median(reformat5(io==1,iol))  median(reformat5(io==2,iol))  median(reformat5(io==3,iol))  median(reformat5(io==4,iol))  median(reformat5(io==5,iol))];  % 计算每档补液动作对应的历史中位剂量
+        ma2=[ median(reformat5(vc==1,vcl))  median(reformat5(vc==2,vcl))  median(reformat5(vc==3,vcl))  median(reformat5(vc==4,vcl))  median(reformat5(vc==5,vcl))] ;  % 计算每档升压剂动作对应的历史中位剂量
+
+med=[io vc];  % 拼接成 5x5 的联合动作网格（行：补液档位，列：升压剂档位）
+[uniqueValues,~,actionbloc] = unique(array2table(med),'rows');  % 唯一化得到 25 个联合动作，actionbloc 为每条记录对应的动作索引
+actionbloctrain=actionbloc(train);  % 取出训练集的动作编号，供后续策略学习
 uniqueValuesdose=[ ma2(uniqueValues.med2)' ma1(uniqueValues.med1)'];  % median dose of each bin for all 25 actions
  
  
 % ####################### 整理为MDP需要的表格形式，创建QLDATA3 ###############################################################################
 
 % 构造 TD/MDP 输入矩阵 qldata3：
-%   - 初始 qldata 包含原始 bloc（时间步），聚类状态 idx，离散动作 actionbloctrain，
-%     以及 0/1 死亡标签 Y90 转换出的 ±100 奖励；
+%   - 初始 qldata 包含原始 bloc（时间步）、聚类状态 idx、离散动作 actionbloctrain、
+%     以及 0/1 生存标签 Y90（随后映射成 ±100 奖励）；
 %   - 逐行复制到 qldata3，遇到 bloc==1（轨迹结束）时插入一行吸收态
-%     [下一 bloc, 终结状态, 动作0, 奖励]，并将奖励写进终结行；
+%     [下一 bloc, 终结状态, 动作0, 奖励] 并写入终结奖励；
+%   - qldata3 的四列依次对应 [时间步, 状态编号, 动作编号, 结局/奖励]；
 %   - 结果是一个按患者轨迹拼接的矩阵，用于后续统计转移概率和奖励。
 
 disp('####  CREATE QLDATA3  ####')
@@ -299,6 +300,7 @@ sums0a0=zeros(ncl+2,nact);            % (S,A) 计数表，用于归一化和估�
      for i=1:size(qldata3,1)-1
  
          % 若下一行 bloc != 1，说明轨迹未结束，存在从 S0 到 S1 的一次转移
+         % bloc 为该患者当前 ICU 住院轨迹中的时间步/序号
          if (qldata3(i+1,1))~=1
          S0=qldata3(i,2); S1=qldata3(i+1,2);  acid= qldata3(i,3);
          transitionr(S1,S0,acid)=transitionr(S1,S0,acid)+1;  sums0a0(S0,acid)=sums0a0(S0,acid)+1;
@@ -377,16 +379,21 @@ disp('####   POLICY ITERATION   ####')
  OA(:,modl)=OptimalAction; %save optimal actions
  
 
- % ################################## OPE for 训练集 #####################################################################################
-
+% ################################## OPE for 训练集 #####################################################################################
+% 这一节在 MIMIC 训练集上做离线策略评估（Off-Policy Evaluation, OPE）：
+%   - 行为策略：医生历史选择 `physpol`；目标策略：策略迭代得到的 `OptimalAction`；
+%   - 依据这两类策略，重新整理轨迹矩阵（含 bloc、状态、动作、行为策略概率、目标策略概率、回报、患者 ID）；
+%   - 配置软化参数 p，将行为/目标策略的零概率救济为极小正概率，确保重要性采样时分母不为零。
 disp('#### OFF-POLICY EVALUATION - MIMIC TRAIN SET ####')
  
-% create new version of QLDATA3
-% 重建QLDATA3，包含OPE所需信息
+% 重新构造 qldata / qldata3，在原始四列基础上扩展为 8 列，用于 OPE：
+%   1) bloc；2) state；3) action；4) 奖励占位（非终止步为 0，终止步写入 ±100 奖励）；
+%   5) 行为策略概率 π_beh(s,a)；6) 目标策略概率 π_target(s,a)；
+%   7) 目标策略推荐动作（稍后写入 OptimalAction）；8) 患者 ID（保持轨迹连续性）。
 r=[100 -100];
 r2=r.*(2*(1-Y90)-1); 
-qldata=[blocs idx actionbloctrain Y90 zeros(numel(idx),1) r2(:,1) ptid];  % contains bloc / state / action / outcome&reward     %1 = died
-qldata3=zeros(floor(size(qldata,1)*1.2),8); 
+qldata=[blocs idx actionbloctrain Y90 zeros(numel(idx),1) r2(:,1) ptid];  % 新 qldata 扩展列：bloc/state/action/Y90/占位/奖励/患者 ID
+qldata3=zeros(floor(size(qldata,1)*1.2),8);  % 预留八列，含轨迹终结行（吸收态+奖励）
 
 % 软化策略：如果临床行为策略在某个状态对某个动作的概率是 0，而目标策略给了正概率，就会出现分母为 0 或权重无穷大的情况，评估结果失真。
 % softpi：把医生策略中原本为 0 的动作均匀分配上一点概率，非零动作相应地减去同样的总量；
@@ -396,32 +403,49 @@ abss=[ncl+2 ncl+1]; %absorbing states numbers
  
         for i=1:size(qldata,1)-1
             c=c+1;
+              % qldata 中第 1~3 列分别是 bloc/state/action；第 5 列是占位奖励（此处为 0）；
+              % 第 7 列是 ±100 奖励；第 8 列是患者 ID（用于在评估函数中重建轨迹）。
+              % 这里把这些字段拷贝到 qldata3 的对应位置，便于后续统一处理。
               qldata3(c,:)=qldata(i,[1:3 5 7 7 7 7]);
             if qldata(i+1,1)==1 %end of trace for this patient
                 c=c+1;
+                % 轨迹结束：插入吸收态行。bloc+1（表示终止时刻），状态为生存(ncl+1)/死亡(ncl+2)；
+                % 动作为 0（不再执行决策），第 4 列写入终止奖励，第 5~7 列留空，最后一列保留患者 ID。
                 qldata3(c,:)=[qldata(i,1)+1 abss(1+qldata(i,4)) 0 qldata(i,6) 0 0 0 qldata(i,7)]; 
             end
         end
-        qldata3(c+1:end,:)=[];
-
-% add pi(s,a) and b(s,a)
+        qldata3(c+1:end,:)=[];  % 删除预分配的多余行，得到真实轨迹矩阵
+ 
+% 为每个状态填充行为策略概率 π_beh 和目标策略概率 π_target
 p=0.01; %softening policies  
 softpi=physpol; % behavior policy = clinicians' 
-
+ 
 for i=1:750
-    ii=softpi(i,:)==0;    z=p/sum(ii);    nz=p/sum(~ii);    softpi(i,ii)=z;   softpi(i,~ii)=softpi(i,~ii)-nz;
+    % softpi 是医生行为策略的软化版本：
+    %   - 找出原始概率为 0 的动作（ii==true），把极小量 z 均匀分配给这些动作；
+    %   - 对原本非零的动作扣除相同总量 nz，保持概率和为 1；
+    %   - 这样做避免重要性采样时出现 π_beh=0 导致的除零或无限权重。
+    ii=softpi(i,:)==0;
+    z=p/sum(ii);          % 均匀分给零概率动作的补偿量
+    nz=p/sum(~ii);        % 从非零动作中扣除的量，确保总和仍为 1
+    softpi(i,ii)=z;
+    softpi(i,~ii)=softpi(i,~ii)-nz;
 end
-softb=abs(zeros(752,25)-p/24); %"optimal" policy = target policy = evaluation policy 
+softb=abs(zeros(752,25)-p/24); %"optimal" policy = target policy = evaluation policy  % 目标策略保底给余下 24 个非最优动作均匀的小概率
 
 for i=1:750
-     softb(i,OptimalAction(i))=1-p;
+     softb(i,OptimalAction(i))=1-p;  % 将最优动作的概率设置为 1-p，保证目标策略也合法归一
 end
 
 for i=1:size(qldata3,1)  %adding the probas of policies to qldata3
+    % 跳过吸收态（state>750 的行），只对真实状态填充策略概率与推荐动作
     if qldata3(i,2)<=750
-qldata3(i,5)=softpi(qldata3(i,2),qldata3(i,3));
-qldata3(i,6)=softb(qldata3(i,2),qldata3(i,3));
-qldata3(i,7)=OptimalAction(qldata3(i,2));   %optimal action
+        % 第 5 列：行为策略在 state=qldata3(i,2) 下选择 action=qldata3(i,3) 的概率
+        qldata3(i,5)=softpi(qldata3(i,2),qldata3(i,3));
+        % 第 6 列：目标策略在同一状态下选择该动作的概率
+        qldata3(i,6)=softb(qldata3(i,2),qldata3(i,3));
+        % 第 7 列：记录目标策略在该状态下的推荐动作 ID，供后续对比分析
+        qldata3(i,7)=OptimalAction(qldata3(i,2));   %optimal action
     end
 end
 
@@ -442,41 +466,64 @@ recqvi(modl,7)=quantile(bootwis,0.05);  %we want this as high as possible
 
  % ################################## OPE for 内部测试集 #####################################################################################
 
-% testing on MIMIC-test
+% 使用 MIMIC 测试集做一次离策略评估（OFF-POLICY EVALUATION - MIMIC TEST SET）：
+%   Step1：把测试样本投影到训练阶段的聚类质心，得到状态序列；
+%   Step2：用测试集的联合动作编号与 90 天结局，重建包含 8 列信息的 qldata3；
+%   Step3：对医生策略/目标策略做软化并写入 qldata3，再交给 offpolicy_multiple_eval_010518 计算回报分布。
 disp('#### OFF-POLICY EVALUATION - MIMIC TEST SET ####')
     
-% create new version of QLDATA3 with MIMIC TEST samples
-% 将测试集的特征分配到752个聚类状态
-idxtest=knnsearch(C,Xtestmimic);
-idxs(test,modl)=idxtest;  %important: record state membership of test cohort
+% ---------- Step1: 计算测试集的状态映射 ----------
+idxtest=knnsearch(C,Xtestmimic);                 % 基于训练得到的质心 C，为每条测试记录找到最近的聚类状态
+idxs(test,modl)=idxtest;                         % 记录当前模型下测试集的状态编号，用于后续分析
 
-%包含OPE所需信息
-actionbloctest=actionbloc(~train);
-Y90test=reformat5(~train,outcome);
-r=[100 -100];
-r2=r.*(2*(1-Y90test)-1); 
-qldata=[bloctestmimic idxtest actionbloctest Y90test zeros(numel(idxtest),1) r2(:,1) ptidtestmimic];  % contains bloc / state / action / outcome&reward     %1 = died
-qldata3=zeros(floor(size(qldata,1)*1.2),8); 
+% ---------- Step2: 组装测试集轨迹表 ----------
+actionbloctest=actionbloc(~train);               % 把 actionbloc 中对应测试集的动作编号取出来
+Y90test=reformat5(~train,outcome);               % 测试集 90 天结局标签（1=死亡,0=存活）
+r=[100 -100];                                    % 奖励模板：存活 +100，死亡 -100
+r2=r.*(2*(1-Y90test)-1);                         % 将 0/1 结局映射为 ±100 奖励向量
+% qldata 列定义（与训练段一致）：
+%   1:bloc   2:state   3:action   4:Y90   5:奖励占位(0)   6:±100 奖励   7:患者 ID
+qldata=[bloctestmimic idxtest actionbloctest Y90test zeros(numel(idxtest),1) r2(:,1) ptidtestmimic];
+qldata3=zeros(floor(size(qldata,1)*1.2),8);       % 预分配 8 列轨迹矩阵，预留吸收态行
 
-% 把每个时间步的状态/动作复制到 8 列的 qldata3，并在每个病人终点插入吸收态行
+% ---------- Step3: 逐条复制轨迹，并在每位患者结束时添加吸收态 ----------
 c=0;
 abss=[ncl+2 ncl+1]; %absorbing states numbers
  
         for i=1:size(qldata,1)-1
-            c=c+1; qldata3(c,:)=qldata(i,[1:3 5 7 7 7 7]);
+            c=c+1;
+            % 拷贝当前时间步数据：
+            %   列1-3 → bloc/state/action；
+            %   列4 → 奖励占位（初始化为 0）；
+            %   列5-7 → 暂时写 0，后面填入行为概率、目标概率、目标策略动作；
+            %   列8 → 患者 ID。
+            qldata3(c,:)=qldata(i,[1:3 5 7 7 7 7]);
             if qldata(i+1,1)==1 %end of trace for this patient
-                c=c+1; qldata3(c,:)=[qldata(i,1)+1 abss(1+qldata(i,4)) 0 qldata(i,6) 0 0 0 qldata(i,7)]; 
+                c=c+1;
+                % 若下一行 bloc 重新回到 1，说明当前患者轨迹结束：
+                %   插入吸收态行：bloc+1、状态改成生存/死亡吸收态、动作=0、奖励写入第 4 列；
+                %   第 5~7 列保留 0（吸收态不需要策略概率），第 8 列延续患者 ID。
+                qldata3(c,:)=[qldata(i,1)+1 abss(1+qldata(i,4)) 0 qldata(i,6) 0 0 0 qldata(i,7)]; 
             end
         end
-        qldata3(c+1:end,:)=[];
+        qldata3(c+1:end,:)=[];                     % 清理预分配的空行，只保留实际轨迹
 
-% add pi(s,a) and b(s,a)
-% 软化
+% ---------- Step4: 写入软化后的行为/目标策略 ----------
+
 p=0.01; %small correction factor // softening policies
 softpi=physpol; % behavior policy = clinicians'
-for i=1:750;  ii=softpi(i,:)==0;    z=p/sum(ii);    nz=p/sum(~ii);    softpi(i,ii)=z;   softpi(i,~ii)=softpi(i,~ii)-nz; end
-softb=abs(zeros(752,25)-p/24); %"optimal" policy = target policy = evaluation policy
-for i=1:750;softb(i,OptimalAction(i))=1-p;end
+for i=1:750
+    % 与训练段相同：对行为策略进行软化，避免 π_beh=0
+    ii=softpi(i,:)==0;             % 当前状态下，原始概率为 0 的动作掩码
+    z=p/sum(ii);                   % 均匀分配的补偿概率
+    nz=p/sum(~ii);                 % 对非零动作需要扣除的概率
+    softpi(i,ii)=z;
+    softpi(i,~ii)=softpi(i,~ii)-nz;
+end
+softb=abs(zeros(752,25)-p/24);     % 目标策略的基准（非最优动作均分 p/24）
+for i=1:750
+    softb(i,OptimalAction(i))=1-p; % 把最优动作的概率设为 1-p，保持归一
+end
 
 for i=1:size(qldata3,1)  %adding the probas of policies to qldata
     if qldata3(i,2)<=750
@@ -486,12 +533,16 @@ qldata3(i,7)=OptimalAction(qldata3(i,2));   %optimal action
     end
 end
 
-qldata3test=qldata3;
+qldata3test=qldata3;                                    % 保存测试集轨迹矩阵，供日志或后续分析使用
+
+% ---------- Step5: 调用 OPE 评估函数 ----------
 
 tic
 [ bootmimictestql,bootmimictestwis ] = offpolicy_multiple_eval_010518( qldata3,physpol, 0.99,1,6,2000);
 toc
 
+% 记录测试集上的 Q-learning (bootmimictestql) 和 WIS (bootmimictestwis) 分布统计，
+% 以评估策略的平均回报与保守下界性能。
 recqvi(modl,19)=quantile(bootmimictestql,0.95);   %PHYSICIANS' 95% UB
 recqvi(modl,20)=nanmean(bootmimictestql);
 recqvi(modl,21)=quantile(bootmimictestql,0.99);
@@ -500,10 +551,10 @@ recqvi(modl,23)=quantile(bootmimictestwis,0.01);
 recqvi(modl,24)=quantile(bootmimictestwis,0.05);  %AI 95% LB, we want this as high as possible
 
 
-if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model % WIS 评估的 5% 分位数（quantile(bootmimictestwis, 0.05)），如果它大于 40，就说明保守置信下界不错，于是继续执行 eICU 评估；反之则跳过进入下一次模型训练。
+if recqvi(modl,24) > 40 %saves time if policy is not good on MIMIC test: skips to next model 
+% WIS 评估的 5% 分位数（quantile(bootmimictestwis, 0.05)），如果它大于 40，就说明保守置信下界不错，于是继续执行 eICU 评估；反之则跳过进入下一次模型训练。
 
-
-    % ################################## OPE for 外部测试集 #####################################################################################
+% ################################## OPE for 外部测试集 #####################################################################################
 
  disp('########################## eICU TEST SET #############################')
 
@@ -724,11 +775,16 @@ disp('####   IDENTIFY STATE MEMBERSHIP OF eICU TEST RECORDS   ####')
 %% FIB 2A plot safety of algos: 95th UB of physicians policy value vs 95th LB of AI policy
 % during bulding of 500 different models
 % show that the value of AI policy is always guaranteed to be better than doctors' according to the model
+% 对 recqvi 中的置信界做“历史最大值”累积，逐模型展示医生与 AI 策略的安全边界走向：
+%   - 列19：医生策略在 MIMIC 测试集的 95% 上界；
+%   - 列24：AI 策略在 MIMIC 测试集的 95% 下界；
+%   - 列14：AI 策略在 eICU 测试集的 95% 下界。
 
 clear h
 r=recqvi;   %MAKE SURE RECQVI IS SORTED BY MODEL NUMBER!!!
 
 m=zeros(size(r,1),1);
+% 对医生策略 95% 上界做逐步累积最大值，得到“目前为止最安全的医生策略”曲线
 for i=1:size(r,1)
 if r(i,19)>max(m)  %physicians    // OR 19 = 95th percentile!!!!!!!!!!!!
 m(i)=r(i,19);
@@ -741,6 +797,7 @@ h(1)=semilogx(m,'linewidth',2);
 hold on
 
 m=zeros(size(r,1),1);
+% 同理，记录 AI 策略（MIMIC 测试集）95% 下界的历史最大值，越大表示越保守的保证
 for i=1:size(r,1)
 if r(i,24)>max(m)  %learnt policy
 m(i)=r(i,24);
@@ -752,6 +809,7 @@ h(2)=semilogx(m,'linewidth',2);
 
 
 m=zeros(size(r,1),1);
+% eICU 测试集同理，观察 AI 策略在外部数据上的安全下界
 for i=1:size(r,1)
 if r(i,14)>max(m)  %learnt policy
 m(i)=r(i,14);
@@ -771,6 +829,9 @@ hold off
 
 
 %% FIG 2B BOXPLOT OF POLICY VALUE OVER 500 MODELS -  MIMIC TEST SET ONLY
+% 对比 500 个模型中不同策略的估计回报分布：
+%   recqvi(:,20) = 医生策略；(:,22) = AI 策略；(:,25) = 零药物策略；(:,26) = 随机策略。
+% 绿色水平线标出 AI 策略在所有模型中的最高估计值，突出最后选用的策略。
 
 figure
 clear h
@@ -796,9 +857,10 @@ toc
 nbins=100;
 a=prog(:,1);  %Q values of actual actions
 qv=floor((a+100)/(200/nbins))+1;  % converts Q values to integers btw 0 and nbins
- m=prog(:,2);  %outcome
+m=prog(:,2);  %outcome
 h=zeros(nbins,5);  %avg mortality and other results, per bin
  
+% 将 Q 值按 nbins 分箱，计算每个箱对应的真实死亡率与标准误，检查模型校准情况
 for i=1:nbins
     
     ii=qv==i;
@@ -813,38 +875,39 @@ end
 h(:,4)=h(:,1).*h(:,3)./numel(qv);%weighted average!!
 [nansum(h(:,4)) mean(prog(:,2))] %check that both are close!
  
-yy1=smooth(1:nbins,h(:,1),0.1,'rloess');
+yy1=smooth(1:nbins,h(:,1),0.1,'rloess');  % 用 rloess 对死亡率曲线做平滑，提升图形可读性
 figure
 hold on
-line([0 nbins], [0.5 0.5], 'LineStyle',':','color','k');
-line([nbins/2 nbins/2], [0 1], 'LineStyle',':','color','k');
+line([0 nbins], [0.5 0.5], 'LineStyle',':','color','k');            % 参考线：50% 死亡率
+line([nbins/2 nbins/2], [0 1], 'LineStyle',':','color','k');        % 参考线：Q 值为 0 的分界
  
-H=plot(h(:,1),'b','linewidth',1);
-plot(h(:,1)+h(:,2),'b','linewidth',0.5);
-plot(h(:,1)-h(:,2),'b','linewidth',0.5);
+H=plot(h(:,1),'b','linewidth',1);                                   % 蓝线：分箱平均死亡率
+plot(h(:,1)+h(:,2),'b','linewidth',0.5);                            % 虚线：+1 SEM
+plot(h(:,1)-h(:,2),'b','linewidth',0.5);                            % 虚线：-1 SEM
  
 ylabel('Mortality risk');
 xlabel('Return of actions')
 axis([0 nbins 0 1]); ax=gca;
-ax.XTick=0:nbins/10:nbins; ax.XTickLabel =num2cell(-100:20:100);
-bw=0.5*200/nbins;
-H=plot(yy1,'r','linewidth',1);
+ax.XTick=0:nbins/10:nbins; ax.XTickLabel =num2cell(-100:20:100);    % 将横坐标标签换成实际 Q 值（回报）
+bw=0.5*200/nbins;  %#ok<NASGU> % 留下 bw 以兼容后续脚本（部分版本可能使用）
+H=plot(yy1,'r','linewidth',1);                                      % 红线：平滑后的死亡率曲线
 axis square
 set(gca,'FontSize',12)
 hold off
 
 
 %% FIG 2D = Computes avg Q value per patient / MIMIC TRAIN SET
-  
+% 目的：统计医生策略下，每位患者的平均 Q 值分布，并按存活/死亡分两组比较。
+ 
 r=array2table(prog);
-r.Properties.VariableNames = {'Qoff','morta','id','rep'};
-d=grpstats(r,{'rep','id'},{'mean','median','sum'});
-edges=-100:5:100;
+r.Properties.VariableNames = {'Qoff','morta','id','rep'};   % Q 值、结局、患者 ID、bootstrap 编号
+d=grpstats(r,{'rep','id'},{'mean','median','sum'});         % 按患者+bootstrap 分组，求均值/中位数/和
+edges=-100:5:100;                                           % 直方图的边界
 
 figure
-h(1)=histogram(d.mean_Qoff(d.mean_morta==0),edges,'facecolor','b','normalization','probability');
+h(1)=histogram(d.mean_Qoff(d.mean_morta==0),edges,'facecolor','b','normalization','probability'); % 蓝色：存活患者
 hold on
-h(2)=histogram(d.mean_Qoff(d.mean_morta==1),edges,'facecolor','r','normalization','probability');
+h(2)=histogram(d.mean_Qoff(d.mean_morta==1),edges,'facecolor','r','normalization','probability'); % 红色：死亡患者
 hold off
 legend([h(1) h(2)],{'Survivors','Non-survivors'},'location','nw')
 axis square
@@ -854,6 +917,7 @@ set(gca,'FontSize',12)
 
 
 %% evaluation of chosen model on eICU
+% 通过大样本 bootstrap（8000 次采样）评估最优策略在 eICU 数据集上的 TD/Q 和 WIS 表现，输出四分位数供报告使用。
 
 disp('####   TESTING CHOSEN MODEL ON eICU    ####')
 
@@ -861,31 +925,32 @@ disp('####   TESTING CHOSEN MODEL ON eICU    ####')
 tic 
  [ booteicuql,booteicuwis] = offpolicy_multiple_eval_010518( qldata2,physpol, 0.99,1,500,8000);
 toc
-  
-booteicuql=repmat(booteicuql,floor(size(booteicuwis,1)/size(booteicuql,1)),1);  % copy-paste the array, variance is low anyway
+ 
+booteicuql=repmat(booteicuql,floor(size(booteicuwis,1)/size(booteicuql,1)),1);  % 若 QL 样本数少于 WIS，复制扩展以对齐维度（方差影响可忽略）
 
 [quantile(booteicuql(:,1),0.25)  quantile(booteicuql(:,1),0.5)   quantile(booteicuql(:,1),0.75)]
 [quantile(booteicuwis(:,1),0.25)  quantile(booteicuwis(:,1),0.5)   quantile(booteicuwis(:,1),0.75)]
 
 
 %% FIG 3A - Heatmap of Q values
+% 将 eICU 上 bootstrap 得到的医生策略价值与 AI 策略价值做二维直方图（对数刻度），观察二者的联合分布。
  
-a=[booteicuql booteicuwis];
-[counts] = hist3(a,'Edges',{-105:2.5:100 -105:2.5:100}');
+a=[booteicuql booteicuwis];                                         % 列 1：医生策略，列 2：AI 策略
+[counts] = hist3(a,'Edges',{-105:2.5:100 -105:2.5:100}');           % 以 2.5 为步长划 bin，统计落入每个方格的次数
  
-counts = rot90(counts);
+counts = rot90(counts);                                             % 旋转矩阵匹配视觉坐标系
 figure
-imagesc(log10(counts))
+imagesc(log10(counts))                                              % 使用 log10 展示罕见/常见区域
 colormap jet
 c=colorbar;
 c.Label.String = 'Booststrap estimates (log10 scale)';
 axis square
 hold on
 axis([1 83 1 83])
-line([1 83],[83 1],'LineWidth',2,'color','w');
+line([1 83],[83 1],'LineWidth',2,'color','w');                      % 白色对角线：AI=Clinician 的等值线
 ax = gca;
 ax.YTick=1:10:100;
-ax.YTickLabel = {'100', '75','50','25','0','-25','-50','-75','-100'};
+ax.YTickLabel = {'100', '75','50','25','0','-25','-50','-75','-100'}; % 将像素索引转换为实际策略价值
 ax.XTick=2:10:100;
 ax.XTickLabel = {'-100','-75','-50','-25','0','25','50','75','100'};
 xlabel('Clinicans'' policy value')
@@ -894,14 +959,16 @@ set(gca,'FontSize',12)
 hold off
 
 
-%%  FIGS 3B3C : 5x5 3D histogram for distrib of action from eICU   
+%%  FIGS 3B3C : 5x5 3D histogram for distrib of action from eICU
+% 对 eICU 的实际临床动作与 AI 推荐动作分别绘制 5×5 条形图，
+% 每个格子对应 (IV fluids, vasopressor) 档位组合，展示动作分布差异。
 
-nra=5;
+nra=5;                                                                % 每种治疗离散成 5 档（含 0 剂量）
 iol=find(ismember(MIMICtable.Properties.VariableNames,{'input_4hourly'}));
 vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
  
- a= reformat5(:,iol);                   %IV fluid
- a= tiedrank(a(a>0)) / length(a(a>0));   % excludes zero fluid (will be action 1)
+a= reformat5(:,iol);                                                 % 使用训练集统计离散化边界：IV 档位
+a= tiedrank(a(a>0)) / length(a(a>0));   % excludes zero fluid (will be action 1)
  
         iof=floor((a+0.2499999999)*4);  %converts iv volume in 4 actions
         a= reformat5(:,iol); a=find(a>0);  %location of non-zero fluid in big matrix
@@ -911,7 +978,7 @@ vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
         vcr(vcr==0)=1; vc(vc~=0)=vcr+1; vc(vc==0)=1;
         ma1=[ median(reformat5(io==1,iol))  median(reformat5(io==2,iol))  median(reformat5(io==3,iol))  median(reformat5(io==4,iol))  median(reformat5(io==5,iol))];  %median dose of drug in all bins
         ma2=[ median(reformat5(vc==1,vcl))  median(reformat5(vc==2,vcl))  median(reformat5(vc==3,vcl))  median(reformat5(vc==4,vcl))  median(reformat5(vc==5,vcl))] ;
-  
+ 
 med=[io vc];
 [uniqueValues,~,actionbloc] = unique(array2table(med),'rows');
 actionbloctrain=actionbloc(train);
@@ -923,18 +990,18 @@ vcl=find(ismember(MIMICtable.Properties.VariableNames,{'max_dose_vaso'}));
  ma2=[ max(reformat5(vc==1,vcl))  max(reformat5(vc==2,vcl))  max(reformat5(vc==3,vcl))  max(reformat5(vc==4,vcl))  max(reformat5(vc==5,vcl))] ;
  
 
-% define actionbloctest = which actions are taken in the test set ????
+% 将 eICU 连续剂量映射到上述离散边界，得到实际动作的档位组合
 vct=eICUraw(:,4); vct(vct>ma2(nra-1))=nra; vct(vct==0)=1; for z=2:nra-1; vct(vct>ma2(z-1) & vct<=ma2(z))=z;end
 iot=eICUraw(:,45); for z=2:nra-1; iot(iot>ma1(z-1) & iot<=ma1(z))=z; end;iot(iot>ma1(nra-1))=nra;iot(iot==0)=1;
  
-med=[iot vct];
+med=[iot vct];                                                       % 第一列 IV 档位，第二列 Vaso 档位
 
  
 figure
 subplot(1,2,1)   % /////////////   ACTUAL ACTIONS   ////////////////
  
-[counts] = hist3(med,'Edges',{1:5 1:5})./size(med,1);
- counts = flipud(counts);
+[counts] = hist3(med,'Edges',{1:5 1:5})./size(med,1);                % 统计每个档位组合的频率
+ counts = flipud(counts);                                           % 翻转使得高剂量在图的远端
 b=bar3(counts);
 for k = 1:length(b)
     zdata = b(k).ZData;
@@ -972,9 +1039,9 @@ disp([sum(sum(counts(:,2:4)))  ])
 
 subplot(1,2,2)  % /////////////   OPTIMAL ACTIONS   ////////////////
 OA1=OptimalAction(idxtest2);%test);              %optimal action for each record
-a=[OA1 floor((OA1-0.0001)./5)+1 OA1-floor(OA1./5)*5];
+a=[OA1 floor((OA1-0.0001)./5)+1 OA1-floor(OA1./5)*5];              % 把 1~25 的联合动作拆成 5 档补液 × 5 档升压剂
 a(a(:,3)==0,3)=5;
-med=a(:,[2 3]);
+med=a(:,[2 3]);                                                     % 列 2：补液档；列 3：升压剂档
 [counts] = hist3(med,'Edges',{1:5 1:5})./size(med,1);
   counts = flipud(counts);
  
@@ -1014,32 +1081,34 @@ set(gca,'FontSize',12)
 
 
 %% FIGS 3D & 3E : "Ucurves" eICU TEST SET with bootstrapped CI
+% 构建 U-curve：横轴为“实际给药-模型推荐”差值，纵轴为死亡率，展示超额/不足用药对预后影响。
+% 使用 bootstrap 采样（nr_reps 次）估计均值与标准误，分别对静脉液体 (IVF) 与升压剂 (vaso) 计算。
 
-t=[-1250:100:1250]; t2=[-1.05:0.1:1.05];
+t=[-1250:100:1250]; t2=[-1.05:0.1:1.05];                           % IVF（毫升）与 Vaso（剂量倍数）的分箱边界
 
 nr_reps=200; 
-p=unique(qldata2(:,8));
+p=unique(qldata2(:,8));                                           % 患者 ID 列
 prop=10000/numel(p); %10k patients of the samples are used
 prop=min([prop 0.75]);  %max possible value is 0.75 (75% of the samples are used)
 
 % ACTUAL DATA
 disp('U-curves with actual doses...')
 % column key:  9 given fluid    10 given vaso    11 model dose fluid     12 model dose vaso
-qldata=qldata2(qldata2(:,3)~=0,:);
-qldata(:,14)=qldata(:,10)-qldata(:,12);
-qldata(:,15)=qldata(:,9)-qldata(:,11);
+qldata=qldata2(qldata2(:,3)~=0,:);                                 % 过滤掉吸收态行
+qldata(:,14)=qldata(:,10)-qldata(:,12);                            % 列14：实际升压剂 - 推荐升压剂
+qldata(:,15)=qldata(:,9)-qldata(:,11);                             % 列15：实际静脉液 - 推荐静脉液
 
 r=array2table(qldata(:,[8 13 14 15]));  
 r.Properties.VariableNames = {'id','morta','vaso','ivf'};
-d=grpstats(r,'id',{'mean','median','sum'});
+d=grpstats(r,'id',{'mean','median','sum'});                        % 按患者聚合，得到平均/中位超额剂量与死亡率
 d3=([d.mean_morta d.mean_vaso d.mean_ivf d.median_vaso d.median_ivf d.sum_ivf d.GroupCount]);
-r1=zeros(numel(t)-1,nr_reps,2);
-r2=zeros(numel(t2)-1,nr_reps,2);
+r1=zeros(numel(t)-1,nr_reps,2);                                    % IVF：存均值/样本数/SEM
+r2=zeros(numel(t2)-1,nr_reps,2);                                   % Vaso：存均值/样本数/SEM
 
 for rep=1:nr_reps
     
 disp(rep);
-ii=floor(rand(size(p,1),1)+prop);     % select a random sample of trajectories
+ii=floor(rand(size(p,1),1)+prop);     % Bernoulli 采样：约 prop 比例患者进入本次 bootstrap
 d4=d3(ii==1,:);
 
 a=[];     % IVF
@@ -1064,8 +1133,8 @@ r2(:,rep,3)=b(:,5)./sqrt(b(:,3));  % SEM !!
 
 end
 
-a1=nanmean(r1(:,:,1),2);
-a2=nanmean(r2(:,:,1),2);
+a1=nanmean(r1(:,:,1),2);                                           % IVF：各 bin 的平均死亡率
+a2=nanmean(r2(:,:,1),2);                                           % Vaso：各 bin 的平均死亡率
 
 
 % computing SEM in each bin
@@ -1082,7 +1151,8 @@ end
 
 
 
-%% FIG 3D & 3E - "U-CURVE"  PLOT  ONLY OPTIMAL POLICY   
+%% FIG 3D & 3E - "U-CURVE"  PLOT  ONLY OPTIMAL POLICY
+% 使用上面得到的均值与 SEM 绘制 U 曲线，可选平滑显示最优策略推荐剂量时的死亡率走势。
 t=[-1250:100:1250]; t2=[-1.05:0.1:1.05];
 
 s=0;  %  !!!!  SMOOTHING FACTOR  !!!! use 0 for no smooth curves
@@ -1095,11 +1165,11 @@ yy2=smooth(1:numel(ar1),ar1,s,'loess');
 end
 subplot(1,2,1)
 hold on
-h=plot(a1,'b','linewidth',1);
-plot(a1+f*s1,'b:','linewidth',1)
+h=plot(a1,'b','linewidth',1);                     % 蓝线：IVF 超额剂量 vs 死亡率
+plot(a1+f*s1,'b:','linewidth',1)                 % 以 f 倍 SEM 作上下界，强调不确定性
 plot(a1-f*s1,'b:','linewidth',1)
 
-plot([numel(a1)/2+.5 numel(a1)/2+.5],[0 1],'k:');
+plot([numel(a1)/2+.5 numel(a1)/2+.5],[0 1],'k:'); % 竖线：剂量差为 0 的位置
 xlabel('Average dose excess per patient')
 ylabel('Mortality')
 axis([1 numel(a1) 0 1]); ax=gca;
@@ -1126,7 +1196,7 @@ yy2=smooth(1:numel(ar2),ar2,s,'loess');
 end
 
 hold on
-h=plot(a2,'b','linewidth',1);
+h=plot(a2,'b','linewidth',1);                     % 升压剂 U 曲线
 plot(a2+f*s2,'b:','linewidth',1)
 plot(a2-f*s2,'b:','linewidth',1)
 plot([numel(a2)/2+.5 numel(a2)/2+.5],[0 1],'k:');
@@ -1153,6 +1223,7 @@ hold off
 
 
 %% FIG SA - FEATURE IMPORTANCE for VASOPRESSORS, with bootstraping
+% 通过随机森林 (TreeBagger) + 自助采样估计特征重要性，分别针对医生策略与 AI 推荐的升压剂用药。
 
 nn=100;  %nr bootstraps
 fi=zeros(46,nn);
@@ -1167,18 +1238,18 @@ v2=v([1:3 5:47]);  %this is the list of (correct) feature names
 v2=regexprep(v2,'_',' ');v2=regexprep(v2,' tev','');v2=regexprep(v2,'bp',' BP');
 
 for i=1:nn
-    i
-grp=floor(100*rand(size(eICUraw,1)-1,1)+1)<=5;  %selects a random x% of data for training
+    i                                                           % 输出当前 bootstrap 轮次
+    grp=floor(100*rand(size(eICUraw,1)-1,1)+1)<=5;              % 随机挑选约 5% 样本作为训练子集
 
-tic
-%actual policy
-br=TreeBagger(15,eICUraw(grp,[1:3 5:47]),qldata(grp,10)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);
-fi(:,i)=br.OOBPermutedPredictorDeltaError;
-%optimal policy
-br2=TreeBagger(15,eICUraw(grp,[1:3 5:47]),qldata(grp,12)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);
-toc
+    tic
+    %actual policy：医生是否给升压剂 (>0)
+    br=TreeBagger(15,eICUraw(grp,[1:3 5:47]),qldata(grp,10)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);
+    fi(:,i)=br.OOBPermutedPredictorDeltaError;
+    %optimal policy：AI 推荐是否给升压剂 (>0)
+    br2=TreeBagger(15,eICUraw(grp,[1:3 5:47]),qldata(grp,12)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);
+    toc
 
-fi2(:,i)=br2.OOBPermutedPredictorDeltaError;
+    fi2(:,i)=br2.OOBPermutedPredictorDeltaError;
 
 end
 
@@ -1189,7 +1260,7 @@ fi2=mean(fi2,2);
 
 figure
 subplot(1,2,1)
-[~,i]=sort(fi,'asc');
+[~,i]=sort(fi,'asc');                           % 先按重要性排序，便于观察
 barh(fi(i))
 ylabel 'Feature'
 xlabel 'Out-of-Bag Feature Importance'
@@ -1210,6 +1281,7 @@ title('AI policy')
 set(gca,'FontSize',12)
 
 %% predict IV fluid O/N
+% 同样的特征重要性分析，针对静脉补液（医生给药 vs AI 推荐）。
 
 fi=zeros(46,nn);
 fi2=zeros(46,nn);
@@ -1218,16 +1290,16 @@ v2=v([1:44 46:47]);  %this is the list of (correct) feature names
 v2=regexprep(v2,'_',' ');v2=regexprep(v2,' tev','');v2=regexprep(v2,'bp',' BP');
 
 for i=1:nn
-grp=floor(100*rand(size(eICUraw,1)-1,1)+1)<5;  %selects a random x% of data for training
-i
-tic  %actual policy
-br=TreeBagger(10,eICUraw(grp,[1:44 46:47]),qldata(grp,9)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);%100+floor(200*rand()) );
-fi(:,i)=br.OOBPermutedPredictorDeltaError;
-%optimal policy
-br2=TreeBagger(10,eICUraw(grp,[1:44 46:47]),qldata(grp,11)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);%100+floor(200*rand()) );
-toc
+    grp=floor(100*rand(size(eICUraw,1)-1,1)+1)<5;  %selects a random x% of data for training
+    i
+    tic  %actual policy
+    br=TreeBagger(10,eICUraw(grp,[1:44 46:47]),qldata(grp,9)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);%100+floor(200*rand()) );
+    fi(:,i)=br.OOBPermutedPredictorDeltaError;
+    %optimal policy
+    br2=TreeBagger(10,eICUraw(grp,[1:44 46:47]),qldata(grp,11)>0,'method','c','maxnumsplits',30,'MinLeafSize',500,'OOBVarImp','on','OOBPred','Off','MinLeaf',150,'PredictorNames',v2);%100+floor(200*rand()) );
+    toc
 
-fi2(:,i)=br2.OOBPermutedPredictorDeltaError;
+    fi2(:,i)=br2.OOBPermutedPredictorDeltaError;
 end
 
 fi=mean(fi,2);
